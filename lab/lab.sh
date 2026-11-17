@@ -85,7 +85,7 @@ cmd_images() {
   echo "$ALPINE_SHA512  $BASE_IMG" | sha512sum -c - >/dev/null || die "base image checksum mismatch"
 
   [ -f "$SECRETS_DIR/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C shunya-lab -f "$SECRETS_DIR/id_ed25519"
-  [ -f "$SECRETS_DIR/lab-token" ] || head -c 32 /dev/urandom | sha256sum | cut -c1-64 > "$SECRETS_DIR/lab-token"
+  [ -f "$SECRETS_DIR/lab-token" ] || openssl rand -hex 32 > "$SECRETS_DIR/lab-token"  # getrandom(2); opens no device node
 
   if [ ! -f "$BOOT_IMG" ]; then
     qemu-img create -q -f qcow2 -F qcow2 -b "$(basename "$BASE_IMG")" "$BOOT_IMG" "$BOOT_SIZE"

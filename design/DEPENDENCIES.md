@@ -23,6 +23,7 @@ a QR library (M7), and `golang.org/x/mod/sumdb/note` (signed notes, M8, if usefu
 | govulncheck | 1.9.0 | Known-vulnerability scan |
 | QEMU | 10.0.13 | Lab VM (WSL Debian package) |
 | xorriso | Debian 13 | Builds the cloud-init seed ISO |
+| gcc, libc6-dev | Debian 13 (gcc 14.2) | Only for `make race` (the race detector needs cgo); release binaries stay CGO_ENABLED=0 |
 
 ## Lab-only tools (inside the lab VM, never in the core engine)
 `nvme-cli`, `hdparm`, `sg3_utils`, `util-linux`, `e2fsprogs`, `dosfstools`, used by
