@@ -1,0 +1,35 @@
+# Working notes, plans and intermediate artefacts (never committed)
+/docs/
+
+# Lab: disk images, secrets, VM runtime state
+/lab/images/
+/lab/secrets/
+/lab/share/
+/lab/run/
+/lab/results/
+*.img
+*.qcow2
+*.raw
+*.iso
+
+# Keys and secrets
+*.key
+*.pem
+*.seed
+.env
+.env.*
+
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

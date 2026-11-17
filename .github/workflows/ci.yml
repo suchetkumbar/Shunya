@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # CI never runs lab or destructive tests: those need the `lab` build tag and
+    # only run inside the QEMU lab VM via `make lab-test`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install linters
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: gofmt / vet / staticcheck
+        run: make lint
+      - name: Unit tests (race detector)
+        run: make race
+      - name: govulncheck
+        run: make vulncheck
+      - name: Build (linux + windows, static, reproducible flags)
+        run: make build
