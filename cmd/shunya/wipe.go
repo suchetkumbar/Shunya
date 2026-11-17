@@ -35,7 +35,8 @@ const (
 type wipeFlags struct {
 	execute, resume, verify, direct, asJSON, yesReally bool
 	image, journal, key, patterns, confirm, approved   string
-	sector, chunkMiB, syncMiB, passes                  int
+	seed                                               string
+	sector, chunkMiB, syncMiB, passes, sample          int
 }
 
 func cmdWipe(args []string, stdout, stderr io.Writer) int {
@@ -45,6 +46,8 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 	fl.BoolVar(&f.execute, "execute", false, "actually write (without it: print the plan, write nothing)")
 	fl.BoolVar(&f.resume, "resume", false, "continue the wipe recorded in --journal")
 	fl.BoolVar(&f.verify, "verify", false, "read the whole target back afterwards and compare with the last pass")
+	fl.IntVar(&f.sample, "sample", 0, "afterwards, verify N sectors chosen from --seed (sampled verification)")
+	fl.StringVar(&f.seed, "seed", "", "hex seed (at least 16 bytes) for --sample; recorded as operator-chosen")
 	fl.BoolVar(&f.direct, "direct", false, "image files: use O_DIRECT (block devices always do)")
 	fl.BoolVar(&f.asJSON, "json", false, "dry run: print the plan as JSON")
 	fl.StringVar(&f.image, "image", "", "wipe this regular image file instead of a device")
@@ -59,6 +62,10 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 	fl.BoolVar(&f.yesReally, "yes-really", false, "release builds, fleet mode: skip typing, device must be in --approved")
 	fl.StringVar(&f.approved, "approved", "", "fleet mode: file of approved device fingerprints")
 	if err := fl.Parse(args); err != nil {
+		return 2
+	}
+	if err := checkVerifyFlags(f); err != nil {
+		fmt.Fprintln(stderr, "shunya: wipe:", err)
 		return 2
 	}
 	if f.resume {
@@ -124,9 +131,9 @@ func inspect(path string, isImage bool, sector int, stderr io.Writer) (*targetSp
 }
 
 // open opens the target for writing with every guard (block devices re-run Check).
-func (s *targetSpec) open(f wipeFlags, stderr io.Writer) (backend.Target, int) {
+func (s *targetSpec) open(f wipeFlags, execute bool, stderr io.Writer) (backend.Target, int) {
 	if s.isImage {
-		t, err := backend.OpenFile(s.path, backend.FileOptions{Options: backend.Options{Execute: true, Direct: f.direct}, SectorSize: s.sector})
+		t, err := backend.OpenFile(s.path, backend.FileOptions{Options: backend.Options{Execute: execute, Direct: f.direct}, SectorSize: s.sector})
 		if err != nil {
 			fmt.Fprintln(stderr, "shunya: wipe:", err)
 			return nil, 1
@@ -142,7 +149,7 @@ func (s *targetSpec) open(f wipeFlags, stderr io.Writer) (backend.Target, int) {
 		fmt.Fprintln(stderr, "shunya: wipe:", err)
 		return nil, 2
 	}
-	t, err := backend.OpenBlock(env, s.path, backend.Options{Execute: true, Direct: true, Confirm: conf})
+	t, err := backend.OpenBlock(env, s.path, backend.Options{Execute: execute, Direct: true, Confirm: conf})
 	if err != nil {
 		fmt.Fprintln(stderr, "shunya: wipe:", err)
 		return nil, 1
@@ -239,7 +246,7 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	printPlan(stdout, plan)
-	tg, code := spec.open(f, stderr)
+	tg, code := spec.open(f, true, stderr)
 	if code != 0 {
 		return code
 	}
@@ -304,7 +311,7 @@ func resumeWipe(f wipeFlags, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shunya: wipe:", err)
 		return 1
 	}
-	tg, code := spec.open(f, stderr)
+	tg, code := spec.open(f, true, stderr)
 	if code != 0 {
 		return code
 	}
@@ -355,25 +362,7 @@ func execute(tg backend.Target, plan engine.Plan, rec engine.JournalRecorder, op
 	fmt.Fprintf(stdout, "DONE: %d pass(es), %s written in this run (%s, %.0f MB/s). NIST SP 800-88 level: Clear.\n",
 		len(plan.Passes), human(uint64(res.BytesWritten)), res.Elapsed.Round(time.Millisecond),
 		float64(res.BytesWritten)/max(res.Elapsed.Seconds(), 1e-9)/1e6)
-	if f.verify {
-		last := plan.Passes[len(plan.Passes)-1]
-		pat, err := engine.NewPattern(last.Pattern, mustHex(last.Key))
-		if err != nil {
-			fmt.Fprintln(stderr, "shunya: verify:", err)
-			return 1
-		}
-		v, err := engine.Verify(ctx, tg, pat, plan.ChunkBytes)
-		if err != nil {
-			fmt.Fprintln(stderr, "shunya: verify:", err)
-			return 1
-		}
-		if !v.OK() {
-			fmt.Fprintf(stdout, "VERIFY FAILED: %d sector(s) differ, first at byte %d\n", v.BadSectors, v.FirstBad)
-			return exitVerifyFail
-		}
-		fmt.Fprintf(stdout, "VERIFIED: all %s read back and match the %s pattern.\n", human(uint64(v.BytesRead)), last.Pattern)
-	}
-	return 0
+	return verifyAndRecord(ctx, tg, plan, rec, f, stdout, stderr)
 }
 
 func mustHex(s string) []byte {

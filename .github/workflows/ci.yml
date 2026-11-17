@@ -25,6 +25,8 @@ jobs:
         run: make lint
       - name: Unit tests (race detector)
         run: make race
+      - name: Broken-wipe negative test (test-only brokenwipe build is caught)
+        run: make test-broken
       - name: Fuzz (short pass over every Fuzz* target)
         run: make fuzz FUZZTIME=5s
       - name: govulncheck

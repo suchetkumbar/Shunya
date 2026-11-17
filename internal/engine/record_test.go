@@ -161,6 +161,7 @@ func TestReplayRejectsInconsistentHistory(t *testing.T) {
 		"resume mislabelled":  {start, {RecInterrupted, stopData{0, 0, "x"}}, {RecResumed, ResumeData{After: StopUnclean}}},
 		"unknown type":        {start, {"teleport", posData{}}},
 		"two starts":          {start, start},
+		"verified early":      {start, {RecVerified, VerifiedData{Mode: "full", OK: true}}},
 		"invalid plan (keys)": {{RecStart, StartData{Plan: func() Plan { q := p; q.Passes = []Pass{{Pattern: PatternRandom}}; return q }()}}},
 	}
 	for name, recs := range cases {
@@ -239,5 +240,27 @@ func TestPlanRejects(t *testing.T) {
 	}
 	if _, err := NewPlan(ok); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplayVerifiedAfterDone(t *testing.T) {
+	tg := image(t, "", 4*64*kib, 512)
+	p := planFor(t, tg, 64*kib, 64*kib)
+	jpath := filepath.Join(t.TempDir(), "j")
+	w, _ := journal.Create(jpath, jkey)
+	rec := JournalRecorder{w}
+	rec.Start("id", "t", p)
+	if _, err := Run(context.Background(), tg, p, rec, RunOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	rec.Verified(VerifiedData{Mode: "full", OK: true, BytesRead: tg.Size(), FirstBad: -1})
+	rec.Verified(VerifiedData{Mode: "sampled", OK: false, Samples: 10, SeedSource: SeedOperator, BadSectors: 1})
+	w.Close()
+	st, err := Replay(readLog(t, jpath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Done || len(st.Verifications) != 2 || !st.Verifications[0].OK || st.Verifications[1].OK {
+		t.Fatalf("%+v", st.Verifications)
 	}
 }

@@ -203,21 +203,24 @@ cmd_test() {
   is_running || die "VM not running (make lab-up)"
   # bin/lab holds the token-bearing lab builds (make build-lab); they never leave the lab.
   local bin="$REPO_DIR/bin/lab"
-  [ -x "$bin/shunya" ] && [ -x "$bin/backend.test" ] || die "missing $bin/{shunya,backend.test} (make build-lab)"
+  [ -x "$bin/shunya" ] && [ -x "$bin/shunya-broken" ] && [ -x "$bin/backend.test" ] || die "missing $bin/{shunya,shunya-broken,backend.test} (make build-lab)"
   local stamp out
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   out="$RESULTS_DIR/$stamp"
   mkdir -p "$out"
   local w=/home/$VM_USER/shunya
   cmd_run "rm -rf $w && mkdir -p $w/results && chown -R $VM_USER $w"
+  # Packages added after first boot (cloud-init installs VM_PACKAGES only once). VM only.
+  cmd_run "for i in 1 2 3; do apk add --quiet $VM_PACKAGES && break; sleep 3; done" || die "apk add failed in the VM"
   cmd_push "$bin/shunya" "$w/shunya"
+  cmd_push "$bin/shunya-broken" "$w/shunya-broken"
   log "running shunya list in VM (read-only)"
   cmd_run "$w/shunya list --all | tee $w/results/list.txt; $w/shunya list --json > $w/results/list.json"
   log "shunya guard (read-only): boot disk and a target"
   cmd_run "$w/shunya guard /dev/vda | tee $w/results/guard-vda.txt; $w/shunya guard /dev/nvme0n1 | tee $w/results/guard-nvme0n1.txt; true"
   cmd_push "$bin/backend.test" "$w/backend.test"
   log "running backend lab tests as root (writes to TARGET disks only)"
-  cmd_run "cd $w && SHUNYA_LAB=1 ./backend.test -test.v -test.count=1 > results/backend-lab.txt 2>&1; echo \$? > results/backend-lab.rc"
+  cmd_run "cd $w && SHUNYA_LAB=1 ./backend.test -test.v -test.count=1 -test.timeout=45m > results/backend-lab.txt 2>&1; echo \$? > results/backend-lab.rc"
   if [ "${PROBE:-0}" = 1 ]; then
     cmd_push "$LAB_DIR/probe/probe.sh" "$w/probe.sh"
     log "running capability probe in VM (destructive to TARGET disks only)"
@@ -229,6 +232,7 @@ cmd_test() {
   log "results in $out"
   log "backend lab tests:"
   grep -E '^(=== RUN|--- |    backend_lab_test|PASS|FAIL|ok)' "$out/backend-lab.txt" | grep -v '^=== RUN' || true
+  [ -f "$out/canary-report.txt" ] && { log "canary harness report:"; cat "$out/canary-report.txt"; }
   local rc; rc="$(cat "$out/backend-lab.rc" 2>/dev/null || echo missing)"
   log "checking results against lab expectations"
   (cd "$REPO_DIR" && go run ./lab/check "$out/list.json") || return 1

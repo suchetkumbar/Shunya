@@ -12,6 +12,8 @@ with its justification.
 
 No module was added in M3. `golang.org/x/sys` also provides flock and `O_NOFOLLOW` for the journal and `st_dev` for the journal placement check. The random pattern uses the standard library's `crypto/aes` + `crypto/cipher` CTR; ChaCha20 would need `x/crypto`, which isn't pre-approved. Leak checks use the in-tree `internal/testutil/leakcheck` instead of `go.uber.org/goleak`.
 
+No module was added in M4 either. The canary harness uses the standard library only: `crypto/hmac`, `image/jpeg`, `archive/zip`, `hash/crc32`, and `math/rand/v2` ChaCha8 for the sample positions. Aho-Corasick is written in-tree.
+
 Pre-approved for later milestones: a TUI library
 (`charmbracelet/bubbletea` + `lipgloss`, M9), a PDF library (`go-pdf/fpdf`, M7),
 a QR library (M7), and `golang.org/x/mod/sumdb/note` (signed notes, M8, if useful).
@@ -29,5 +31,8 @@ a QR library (M7), and `golang.org/x/mod/sumdb/note` (signed notes, M8, if usefu
 
 ## Lab-only tools (inside the lab VM, never in the core engine)
 `nvme-cli`, `hdparm`, `sg3_utils`, `util-linux`, `e2fsprogs`, `dosfstools`, used by
-`lab/probe/probe.sh` to measure what QEMU emulates. Shunya itself issues these commands
+`lab/probe/probe.sh` to measure what QEMU emulates. From M4, also `testdisk` (photorec,
+the file carver) and `exfatprogs`, used by the canary harness (`lab/tests`). Each is
+installed from the Alpine repositories inside the VM by `lab.sh`. `foremost` is not packaged
+for Alpine 3.24. Shunya itself issues these commands
 from Go (brief §4).

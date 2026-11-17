@@ -33,6 +33,7 @@ commands:
   wipe [flags] DEVICE     overwrite DEVICE (NIST SP 800-88 Clear). Without --execute it
   wipe [flags] --image F  prints the plan and writes nothing. See shunya wipe -h.
   wipe --resume ...       continue an interrupted wipe from its journal
+  verify --journal J ...  re-verify a finished wipe (full, or --sample N --seed HEX)
   journal show JOURNAL    verify a progress journal and show its history
   keys gen-dev FILE       create a temporary station signing key (until Milestone 7)
 `
@@ -53,6 +54,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdGuard(args[1:], stdout, stderr)
 	case "wipe":
 		return cmdWipe(args[1:], stdout, stderr)
+	case "verify":
+		return cmdVerify(args[1:], stdout, stderr)
 	case "journal":
 		return cmdJournal(args[1:], stdout, stderr)
 	case "keys":

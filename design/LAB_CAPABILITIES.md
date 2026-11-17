@@ -77,3 +77,12 @@ These stay `pending-real-hardware` until the final real-hardware step (see desig
 | M3 | Full 1 GiB overwrite with O_DIRECT, `kill -9` mid-wipe, `--resume`, full read-back verify; the journal shows one unclean stop | SATA HDD |
 | M3 | `wipe` of the boot disk refused before any journal exists; device-node journal refused by `wipe`, `wipe --resume` and `journal show` | boot, NVMe |
 | M3 | Dry-run plan of the SATA SSD: Clear, flash disclosure, HPA/DCO note; device not opened | SATA SSD |
+| M4 | Canary harness: whole-disk HMAC canaries → mkfs → planted JPEG/PDF/DOCX (one copy deleted) → raw scan + photorec **before** (all 6 files carved intact) → `shunya wipe` + `verify` → scan + photorec **after**: 0 tokens, 0 fragments, 0 markers, 0 carved files | virtio × ext4, FAT32, exFAT; NVMe × ext4 |
+| M4 | Negative test: `shunya-broken` (skips the last 1 %) on ext4: harness finds 333 488 canary tokens, all in the unwritten tail; full verify exits 4 | SATA SSD |
+
+### Forensic tools in the lab VM (M4)
+| Tool | Status |
+|---|---|
+| photorec (testdisk 7.2, Alpine community) | ✅ installed by `lab.sh`; carves JPEG, PDF and DOCX byte-identical from ext4, FAT32 and exFAT, including deleted files |
+| foremost | ❌ not packaged for Alpine 3.24 (main/community); photorec is the only carver. Honest gap: a second, independent carver would strengthen the result |
+| exFAT, FAT32, ext4 | ✅ `exfatprogs`, `dosfstools`, `e2fsprogs`; kernel `exfat` and `vfat` modules present |

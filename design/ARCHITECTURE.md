@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: Milestone 3 — overwrite engine, progress journal and resume implemented. Updated at every milestone.
+> Status: Milestone 4 — verification and the forensic canary harness implemented. Updated at every milestone.
 
 Shunya is a verifiable secure data-wiping tool (SIH25070). It picks the strongest
 NIST SP 800-88 method each medium supports, wipes it (including hidden areas), verifies
@@ -10,7 +10,7 @@ recorded in a public append-only transparency log.
 ## Components
 
 ```
-cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show, keys gen-dev (M3), plan
+cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show, keys gen-dev (M3), verify (M4), plan
 cmd/shunya-verify    offline certificate verifier + `serve` (HTTP API, transparency log, web page)
 
 internal/sysfs       sysfs/procfs readers over fs.FS (fakeable in tests)
@@ -26,7 +26,8 @@ internal/jcs         RFC 8785 canonical JSON
 internal/cert        certificate schema, signing, PDF, QR
 internal/keys        root → station key hierarchy, revocation
 internal/tlog        RFC 6962 Merkle tree, C2SP checkpoints, proofs
-internal/canary      HMAC sector canaries + residue scanner (lab harness)
+internal/canary      HMAC sector canaries, Aho-Corasick residue scanner, planted files,
+                     carve inspection, harness report (lab/test tooling; the engine never imports it)
 lab/                 QEMU lab scripts, capability probe, lab/check (result assertions),
                      lab/tests (block-device tests, -tags labtest, run as root in the VM)
 design/              committed project documentation
@@ -215,3 +216,40 @@ engine.Run
 
 - **Signing key:** temporary dev station key (`shunya keys gen-dev`, file mode 0600,
   refused if group- or world-readable) until the M7 key hierarchy.
+
+## Verification and the forensic canary harness (Milestone 4)
+
+- **Full read-back:** `engine.Verify` reads the whole target and compares it with the
+  last pass's pattern, sector by sector.
+- **Sampled verification:** `engine.VerifySampled` reads *n* sectors.
+  - Positions come from ChaCha8 keyed with SHA-256("shunya-sample-v1" ‖ seed ‖
+    fingerprint). The same seed gives different positions on different drives.
+  - The first and last sectors are always read.
+  - The result states its guarantee: with *n* samples, an unwiped share
+    ≥ 1 − 0.05^(1/n) is caught with 95 % probability (n = 3000 → 0.1 %).
+  - The seed source is recorded. `operator` (`--seed`) is weak, because the station
+    picks it. `tlog-checkpoint` (M8) is a checkpoint fetched after the wipe.
+- **Recording:** every verification appends a signed `verified` record. It is allowed
+  only after `done` and may repeat. `shunya verify --journal J --key K [--sample N --seed HEX]`
+  re-verifies later with a read-only open, after every guard and the fingerprint check.
+  Exit code 4 means a mismatch.
+- **Canary harness** (`internal/canary`):
+
+  | Part | What it does |
+  |---|---|
+  | Canaries | 32-byte tokens: run magic (8) ‖ sector, index (8) ‖ HMAC-SHA256(key, sector)[:16] with the index folded in. Unique, name their sector, can't be forged; any fragment of 32+ bytes holds a whole token |
+  | Scanner | Aho-Corasick over the canary magic plus every planted-file marker, streamed in chunks (the automaton state carries across chunk boundaries). Every byte offset is checked; each magic hit is HMAC-validated into *tokens*, *displaced* (found away from their sector) or *partial* |
+  | Planted files | JPEG, PDF and DOCX generated in code. Each carries a unique marker, stored uncompressed. The DOCX zip has sizes and CRCs up front, without data descriptors, because photorec rejects stored entries with descriptors |
+  | Carve inspection | Matches every carved file against the planted ones by marker and by SHA-256 |
+  | Evaluate | Before the wipe, requires canaries, every marker and every planted file recovered intact (otherwise the test was *vacuous* and fails). After the wipe, requires nothing at all. The broken case requires residue, all in the skipped tail, plus a failing verify |
+  | Report | `canary-report.json` + `.txt` |
+
+- **Broken wipe (negative test):** in the `brokenwipe` build tag, `brokenTailPercent = 1`
+  and the writer skips the last 1 % while journalling success. Everywhere else it is the
+  constant 0 and the branch is compiled out. Only `bin/lab/shunya-broken` is built with it.
+- **Lab flow** (`lab/tests/canary_lab_test.go`), for each disk × file system:
+  1. Plant canaries over the whole disk.
+  2. mkfs (`-E nodiscard`), store the planted files, delete one copy of each, umount.
+  3. Scan, plus photorec ("before").
+  4. `shunya wipe --execute`, then `shunya verify`.
+  5. Drop caches, scan, plus photorec ("after").

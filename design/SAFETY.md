@@ -58,6 +58,11 @@ machine Shunya runs on. They override every other requirement.
 13. **Durable progress only.** A checkpoint is journalled only after `Sync`; a journal that can't be written stops the wipe.
 14. **Big test files** (`make test-big`) go in the repo's `tmp/` (gitignored). Other test files use the Go test temp directory, as before.
 
+### Milestone 4 additions
+15. **The broken wipe is test-only.** `brokenTailPercent` is 1 only under the `brokenwipe` build tag, which is used for exactly one binary, `bin/lab/shunya-broken`. The tag is linted but never part of `make build`, `make repro` or CI builds. In every other build it is the constant 0 and the branch is compiled out (`TestBrokenWipeOnlyInBrokenBuild` runs in every tag set).
+16. **The canary harness runs only in the lab VM** (`lab/tests`, `-tags labtest`, root). It plants through the guarded `BlockBackend` and shells out to `mkfs.*`, `mount` and `photorec`, which the brief allows in lab harnesses only. Its host tests use image files.
+17. **VM-only packages.** `testdisk` (photorec) and `exfatprogs` are installed inside the lab VM by `lab.sh`, never on the host. `foremost` is not packaged for Alpine 3.24, so photorec is the only carver.
+
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is
 treated as outside its intent. `/dev/urandom` is no longer read: the lab token comes

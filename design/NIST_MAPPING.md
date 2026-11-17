@@ -67,8 +67,15 @@ verification can regenerate the stream.
 
 ## Verification
 
-- **M3:** `--verify` does a full read-back of the last pass.
-- **M4:** sampled verification and the forensic canary harness.
+- **Full read-back** (`--verify`, `shunya verify`): every sector compared with the
+  last pass's pattern.
+- **Sampled** (`--sample N --seed HEX`): N sectors from a seed. If a share *f* of the
+  disk still held old data, all N samples miss it with probability (1−f)^N. The
+  result records N, the seed, its source, and the share caught with 95 % probability.
+  An operator-chosen seed is labelled as such.
+- **Forensic canary harness** (lab): proves end to end, with a carver, that the wipe
+  leaves nothing recoverable, and that the harness itself catches a wipe that misses 1 %.
+  See design/LAB_CAPABILITIES.md.
 - **M8:** sampling with a seed the wiping station can't choose in advance.
 
 800-88 treats verification as part of sanitisation. A certificate without it will

@@ -19,6 +19,7 @@ const (
 	RecError       = "error"
 	RecResumed     = "resumed"
 	RecDone        = "done"
+	RecVerified    = "verified" // only after done; may repeat
 )
 
 // StartData is the first record: the wipe's identity and full plan (with pattern keys,
@@ -111,6 +112,26 @@ func (j JournalRecorder) Done(n int64) error {
 	return err
 }
 
+// VerifiedData records one read-back of the finished wipe.
+type VerifiedData struct {
+	Mode       string  `json:"mode"`    // "full" or "sampled"
+	Pattern    string  `json:"pattern"` // the last pass's pattern, which was checked
+	OK         bool    `json:"ok"`
+	BytesRead  int64   `json:"bytes_read"`
+	BadSectors int64   `json:"bad_sectors"`
+	FirstBad   int64   `json:"first_bad"`
+	Samples    int     `json:"samples,omitempty"`
+	SeedSource string  `json:"seed_source,omitempty"`
+	Seed       string  `json:"seed,omitempty"`
+	Bound95    float64 `json:"bound95,omitempty"`
+}
+
+// Verified records a verification result.
+func (j JournalRecorder) Verified(v VerifiedData) error {
+	_, err := j.W.Append(RecVerified, v)
+	return err
+}
+
 // Interruption is one stop-and-resume, as the certificate will report it.
 type Interruption struct {
 	Kind      string    `json:"kind"` // StopInterrupted, StopError, StopUnclean
@@ -136,6 +157,7 @@ type State struct {
 	Finished      time.Time
 	LastRecord    time.Time
 	Interruptions []Interruption
+	Verifications []VerifiedData
 }
 
 // Replay rebuilds the wipe state from a verified journal and checks that the records
@@ -164,7 +186,7 @@ func Replay(log *journal.Log) (State, error) {
 			st.LastRecord = r.At()
 			continue
 		}
-		if st.Done {
+		if st.Done && r.Type != RecVerified {
 			return bad(i, "%q after done", r.Type)
 		}
 		if st.Stopped != "" && r.Type != RecResumed {
@@ -224,6 +246,15 @@ func Replay(log *journal.Log) (State, error) {
 			if r.Type == RecError {
 				st.Stopped = StopError
 			}
+		case RecVerified:
+			if !st.Done {
+				return bad(i, "verified before the wipe is done")
+			}
+			var v VerifiedData
+			if err := r.Decode(&v); err != nil {
+				return bad(i, "%v", err)
+			}
+			st.Verifications = append(st.Verifications, v)
 		case RecDone:
 			if st.Pass != len(st.Plan.Passes) {
 				return bad(i, "done after %d of %d passes", st.Pass, len(st.Plan.Passes))

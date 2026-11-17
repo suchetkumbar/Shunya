@@ -14,8 +14,11 @@ CMDS := shunya
 
 # Every build kind is linted and tested: dev (default), release, and the lab-only tests.
 TAGSETS := "" release labtest
+# Lint also covers the test-only brokenwipe build (bin/lab/shunya-broken); its tests run
+# separately (make test-broken) because that build is wrong on purpose.
+LINTTAGS := $(TAGSETS) brokenwipe
 
-.PHONY: all build build-linux build-release build-windows windows-check build-lab repro test test-big bench race fuzz vet \
+.PHONY: all build build-linux build-release build-windows windows-check build-lab repro test test-big test-broken bench race fuzz vet \
         staticcheck vulncheck lint fmt-check ci clean lab-images lab-up lab-shell lab-test lab-down lab-reset
 
 all: lint test build
@@ -44,13 +47,15 @@ build-windows:
 	@mkdir -p $(BIN)/windows-amd64
 	@for c in $(CMDS); do GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -ldflags '$(LDFLAGS)' -o $(BIN)/windows-amd64/$$c.exe ./cmd/$$c || exit 1; done
 
-# Lab build: dev build + the lab token, plus the lab test binary. Not reproducible by
+# Lab build: dev build + the lab token, plus the lab test binary and shunya-broken (the
+# test-only brokenwipe build that skips the last 1%, for the canary harness's negative test). Not reproducible by
 # design (the token differs per lab) and never shipped; bin/ is gitignored.
 build-lab:
 	@test -s $(LAB_TOKEN_FILE) || { echo "no lab token: run make lab-images first"; exit 1; }
 	@mkdir -p $(BIN)/lab
 	@tok="$$(cat $(LAB_TOKEN_FILE))"; \
 	  GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -ldflags "$(LDFLAGS) -X shunya/internal/backend.labToken=$$tok" -o $(BIN)/lab/shunya ./cmd/shunya && \
+	  GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -tags brokenwipe -ldflags "$(LDFLAGS) -X shunya/internal/backend.labToken=$$tok" -o $(BIN)/lab/shunya-broken ./cmd/shunya && \
 	  GOOS=linux GOARCH=amd64 $(GO) test -c -tags labtest $(GOFLAGS_REPRO) -ldflags "-X shunya/internal/backend.labToken=$$tok" -o $(BIN)/lab/backend.test ./lab/tests
 
 # Reproducibility demo: two builds of each kind from empty build caches must be identical.
@@ -75,6 +80,10 @@ test-big:
 	@mkdir -p $(BIG_DIR)
 	SHUNYA_BIG_DIR=$(BIG_DIR) $(GO) test -count=1 -v -run '^TestBigOddImage$$' ./internal/engine
 
+# The deliberately broken wipe (skips the last 1%) and the harness test that catches it.
+test-broken:
+	$(GO) test -count=1 -tags brokenwipe -run 'Broken' -v ./internal/engine ./internal/canary
+
 # Throughput benchmarks: pattern generators, and full wipes of a 256 MiB image in the
 # test temp directory.
 bench:
@@ -94,10 +103,10 @@ fuzz:
 	done
 
 vet:
-	@for tags in $(TAGSETS); do for os in linux windows; do echo "== vet $$os '$$tags'"; GOOS=$$os $(GO) vet -tags "$$tags" $(PKGS) || exit 1; done; done
+	@for tags in $(LINTTAGS); do for os in linux windows; do echo "== vet $$os '$$tags'"; GOOS=$$os $(GO) vet -tags "$$tags" $(PKGS) || exit 1; done; done
 
 staticcheck:
-	@for tags in $(TAGSETS); do for os in linux windows; do echo "== staticcheck $$os '$$tags'"; GOOS=$$os staticcheck -tags "$$tags" $(PKGS) || exit 1; done; done
+	@for tags in $(LINTTAGS); do for os in linux windows; do echo "== staticcheck $$os '$$tags'"; GOOS=$$os staticcheck -tags "$$tags" $(PKGS) || exit 1; done; done
 
 vulncheck:
 	govulncheck $(PKGS)

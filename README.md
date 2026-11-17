@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 3 (overwrite engine, NIST Clear).** `shunya wipe` overwrites a disk or image with a crash-safe, signed progress journal and can resume after Ctrl-C, kill -9 or power loss. It is a dry run unless `--execute` is given.
+> **Status: Milestone 4 (verification and forensic canary harness).** `shunya wipe` overwrites a disk or image (NIST Clear) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -37,6 +37,7 @@ shunya wipe --execute --verify --journal $D/wipe.journal --key $D/station.key --
 #   Ctrl-C (or kill -9) part-way, then:
 shunya wipe --resume --execute --verify --journal $D/wipe.journal --key $D/station.key
 shunya journal show --key $D/station.key $D/wipe.journal   # verified history, interruptions
+shunya verify --sample 3000 --seed $(openssl rand -hex 16) --journal $D/wipe.journal --key $D/station.key
 rm -r $D
 ```
 - **Default:** one pass of an AES-256-CTR random stream, NIST SP 800-88 **Clear**.
@@ -45,6 +46,13 @@ rm -r $D
 - **Other tests:**
   - `make test-big` wipes and byte-checks a 1 GiB + 4095-sector image.
   - `make bench` runs the throughput benchmarks.
+
+### Verification and the canary harness (Milestone 4)
+- **Full read-back:** `--verify` (on `wipe`), or later with `shunya verify`.
+- **Sampled:** `--sample N --seed HEX`. The output states the unwiped share it catches with 95 % probability; 3000 samples catch 0.1 %. The seed is labelled operator-chosen until Milestone 8 derives it from the transparency log.
+- **Results are journalled:** every verification is a signed `verified` record, and `journal show` lists them.
+- **Canary harness:** `make lab-test` runs it in the lab VM. The report goes to `lab/results/latest/canary-report.{json,txt}`.
+- **Broken-wipe check:** `make test-broken` shows the harness catching a wipe that skips the last 1 %.
 
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):

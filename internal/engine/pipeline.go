@@ -283,7 +283,16 @@ func (r *runner) pass(ctx context.Context, pass int, pat Pattern, from int64) (s
 		case <-ctx.Done():
 			return interrupt()
 		}
-		_, err := r.t.WriteAt(c.buf, c.off)
+		w := c.buf
+		if brokenTailPercent > 0 { // constant false outside the brokenwipe test build
+			if from := brokenSkipFrom(size, r.plan.SectorSize); c.off+int64(len(w)) > from {
+				w = w[:max(0, from-c.off)]
+			}
+		}
+		var err error
+		if len(w) > 0 {
+			_, err = r.t.WriteAt(w, c.off)
+		}
 		r.free[i%g] <- c.buf[:cap(c.buf)]
 		if err != nil {
 			return fail(fmt.Errorf("write at %d: %w", c.off, err))
@@ -327,4 +336,10 @@ func (r *runner) report(pass int, pattern string, passDone int64) {
 		default:
 		}
 	}
+}
+
+// brokenSkipFrom is where the brokenwipe test build stops writing: the last
+// brokenTailPercent of the target, rounded down to whole sectors.
+func brokenSkipFrom(size int64, sector int) int64 {
+	return size - size*brokenTailPercent/100/int64(sector)*int64(sector)
 }
