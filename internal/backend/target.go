@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"shunya/internal/device"
 )
 
 // Target is a sector-addressed storage device. Offsets and lengths of ReadAt/WriteAt
@@ -103,4 +105,10 @@ func checkIO(p []byte, off, size int64, sector int, direct bool) error {
 		return fmt.Errorf("%w: O_DIRECT buffer address not %d-aligned", ErrUnaligned, sector)
 	}
 	return nil
+}
+
+// IdentityOf is the Identity of an enumerated device opened at path.
+func IdentityOf(path string, d *device.Device) Identity {
+	return Identity{Path: path, DevNum: d.DevNum, Model: d.Model, Serial: d.Serial, WWID: d.WWID,
+		SizeBytes: d.SizeBytes, Fingerprint: d.Fingerprint.Value}
 }

@@ -207,6 +207,29 @@ func TestBlockRecheckOnlyBeforeFirstWrite(t *testing.T) {
 	}
 }
 
+// Recheck is the mid-wipe identity check (the engine calls it at every checkpoint):
+// after a swap it fails and the target is dead for every later write.
+func TestBlockRecheckMidWipe(t *testing.T) {
+	b, _, m := openSDB(t, Options{Execute: true})
+	buf := AlignedBuffer(512, 512)
+	if _, err := b.WriteAt(buf, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Recheck(); err != nil {
+		t.Fatalf("unchanged device: %v", err)
+	}
+	m[sdbDir+"/vpd_pg80"].Data = append([]byte{0, 0x80, 0, 9}, "OTHERDISK"...)
+	if err := b.Recheck(); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("swapped device: %v", err)
+	}
+	if _, err := b.WriteAt(buf, 512); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("write after failed recheck: %v", err)
+	}
+	if err := b.Recheck(); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("dead target recheck: %v", err)
+	}
+}
+
 func TestBlockReleaseNeedsConfirmation(t *testing.T) {
 	if !RequiresConfirmation() {
 		t.Skip("dev builds rely on the lab lock instead")

@@ -2,8 +2,12 @@
 //
 //	shunya list [--json] [--all]     read-only device discovery (Milestone 1)
 //	shunya guard [--json] /dev/X     would the safety guards allow opening X? (Milestone 2)
+//	shunya wipe ...                  overwrite wipe, dry run unless --execute (Milestone 3)
+//	shunya journal show ...          verify and print a progress journal
+//	shunya keys gen-dev FILE         temporary station signing key
 //
-// Neither command opens a device node or writes anything.
+// list and guard never open a device node or write anything; wipe writes only with
+// --execute, after every guard in internal/backend.
 package main
 
 import (
@@ -26,6 +30,11 @@ commands:
   list [--json] [--all]   list block devices, their media type and protection status
   guard [--json] DEVICE   show whether the safety guards would allow DEVICE as a wipe
                           target, and why (never opens the device)
+  wipe [flags] DEVICE     overwrite DEVICE (NIST SP 800-88 Clear). Without --execute it
+  wipe [flags] --image F  prints the plan and writes nothing. See shunya wipe -h.
+  wipe --resume ...       continue an interrupted wipe from its journal
+  journal show JOURNAL    verify a progress journal and show its history
+  keys gen-dev FILE       create a temporary station signing key (until Milestone 7)
 `
 
 func main() {
@@ -42,6 +51,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdList(args[1:], stdout, stderr)
 	case "guard":
 		return cmdGuard(args[1:], stdout, stderr)
+	case "wipe":
+		return cmdWipe(args[1:], stdout, stderr)
+	case "journal":
+		return cmdJournal(args[1:], stdout, stderr)
+	case "keys":
+		return cmdKeys(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

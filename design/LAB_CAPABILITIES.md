@@ -64,3 +64,16 @@ These stay `pending-real-hardware` until the final real-hardware step (see desig
 - The WSL kernel builds KVM as a module. The Debian distro's `/etc/wsl.conf` `[boot]` loads `kvm_intel` and fixes `/dev/kvm` group permissions.
 - Alpine locks root: the lab logs in as `alpine` and uses `doas`.
 - First boot takes ~20–90 s (package install with retries); `make lab-up` waits for `/etc/shunya-lab-ready`.
+- The two AHCI disks do not keep their `sda`/`sdb` names across boots (in the M3 run the
+  SSD was `sda`). Lab tests always find disks by serial, never by name.
+- The journal and station key live on the boot disk under `/var/lib/shunya/`. On WSL,
+  files under `/mnt/` have no Unix permissions, so a station key there is refused as
+  "too open". Host demos use a Linux temp directory.
+
+## Tested in the lab, per milestone
+| Milestone | Test (lab/tests, run as root in the VM) | Disks |
+|---|---|---|
+| M2 | 4 KiB O_DIRECT write + read-back; boot disk and partitions refused; mounted disk refused by the guard and by the kernel (EBUSY); second exclusive opener EBUSY; wrong token and spoofed DMI refused | all five targets |
+| M3 | Full 1 GiB overwrite with O_DIRECT, `kill -9` mid-wipe, `--resume`, full read-back verify; the journal shows one unclean stop | SATA HDD |
+| M3 | `wipe` of the boot disk refused before any journal exists; device-node journal refused by `wipe`, `wipe --resume` and `journal show` | boot, NVMe |
+| M3 | Dry-run plan of the SATA SSD: Clear, flash disclosure, HPA/DCO note; device not opened | SATA SSD |

@@ -15,7 +15,7 @@ CMDS := shunya
 # Every build kind is linted and tested: dev (default), release, and the lab-only tests.
 TAGSETS := "" release labtest
 
-.PHONY: all build build-linux build-release build-windows windows-check build-lab repro test race fuzz vet \
+.PHONY: all build build-linux build-release build-windows windows-check build-lab repro test test-big bench race fuzz vet \
         staticcheck vulncheck lint fmt-check ci clean lab-images lab-up lab-shell lab-test lab-down lab-reset
 
 all: lint test build
@@ -67,6 +67,18 @@ repro:
 
 test:
 	@for tags in $(TAGSETS); do echo "== go test -tags '$$tags'"; $(GO) test -count=1 -tags "$$tags" $(PKGS) || exit 1; done
+
+# Milestone 3 acceptance: wipe + byte-check a 1 GiB + 4095-sector image. Needs ~1.1 GiB in
+# the repo's tmp/ (gitignored); the image is deleted afterwards.
+BIG_DIR := $(CURDIR)/tmp
+test-big:
+	@mkdir -p $(BIG_DIR)
+	SHUNYA_BIG_DIR=$(BIG_DIR) $(GO) test -count=1 -v -run '^TestBigOddImage$$' ./internal/engine
+
+# Throughput benchmarks: pattern generators, and full wipes of a 256 MiB image in the
+# test temp directory.
+bench:
+	$(GO) test -run '^$$' -bench . -benchtime 5x ./internal/engine
 
 race:
 	@for tags in $(TAGSETS); do echo "== go test -race -tags '$$tags'"; CGO_ENABLED=1 $(GO) test -race -count=1 -tags "$$tags" $(PKGS) || exit 1; done

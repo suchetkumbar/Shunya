@@ -139,7 +139,7 @@ func (b *Block) recheck() error {
 		return err
 	}
 	if !v.Allowed {
-		return &RefusalError{Path: b.path, Reasons: append([]string{"re-check before first write"}, v.Reasons...)}
+		return &RefusalError{Path: b.path, Reasons: append([]string{"identity re-check"}, v.Reasons...)}
 	}
 	s, n := b.selected, v.Device
 	var why []string
@@ -182,6 +182,23 @@ func (b *Block) beforeWrite() error {
 	return nil
 }
 
+// Recheck repeats the TOCTOU re-check during a wipe; the engine calls it before each
+// pass and after every checkpoint (one sysfs enumeration per sync interval). If the
+// device at this path is no longer the selected drive, or is now in use, the target
+// is killed and every later call fails.
+func (b *Block) Recheck() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.dead != nil {
+		return b.dead
+	}
+	if err := b.recheck(); err != nil {
+		b.kill(err)
+		return err
+	}
+	return nil
+}
+
 // kill closes the descriptor and makes every later call fail with err.
 func (b *Block) kill(err error) {
 	b.dead = err
@@ -192,11 +209,7 @@ func (b *Block) Size() int64             { return b.info.Size }
 func (b *Block) SectorSize() int         { return b.info.Logical }
 func (b *Block) PhysicalSectorSize() int { return b.info.Physical }
 
-func (b *Block) Identity() Identity {
-	d := b.selected
-	return Identity{Path: b.path, DevNum: d.DevNum, Model: d.Model, Serial: d.Serial, WWID: d.WWID,
-		SizeBytes: d.SizeBytes, Fingerprint: d.Fingerprint.Value}
-}
+func (b *Block) Identity() Identity { return IdentityOf(b.path, &b.selected) }
 
 func (b *Block) ReadAt(p []byte, off int64) (int, error) {
 	b.mu.Lock()

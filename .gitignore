@@ -33,3 +33,6 @@ coverage.*
 *.swp
 .DS_Store
 Thumbs.db
+
+# Large test scratch files (make test-big)
+/tmp/

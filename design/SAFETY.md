@@ -51,6 +51,13 @@ machine Shunya runs on. They override every other requirement.
    - `lab/tests` repeats the guard checks on real QEMU disks.
 9. **`shunya guard /dev/X`** shows the verdict and every reason, without opening the device.
 
+### Milestone 3 additions (`internal/engine`, `internal/journal`)
+10. **`shunya wipe` uses the same path.** A dry run (no `--execute`) only runs `backend.Check` and never opens the device. `--execute` opens through `OpenBlock` with every guard; `--resume` re-runs them all and also requires the target's fingerprint to equal the journal's.
+11. **Mid-wipe re-check.** `Block.Recheck` repeats the TOCTOU identity check before each pass and after every checkpoint; a mismatch kills the target.
+12. **Journal placement.** The journal must be a regular file (lstat before open, `O_NOFOLLOW`); a path naming a device node is refused before anything is opened. Its file system must not be the target or any of its partitions (`st_dev`), nor a loop mount of the image being wiped.
+13. **Durable progress only.** A checkpoint is journalled only after `Sync`; a journal that can't be written stops the wipe.
+14. **Big test files** (`make test-big`) go in the repo's `tmp/` (gitignored). Other test files use the Go test temp directory, as before.
+
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is
 treated as outside its intent. `/dev/urandom` is no longer read: the lab token comes
