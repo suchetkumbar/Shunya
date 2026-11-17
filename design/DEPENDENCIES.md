@@ -8,9 +8,9 @@ with its justification.
 
 | Module | Used by | Why | Added |
 |---|---|---|---|
-| _(none yet)_ | | Milestone 0 uses only the standard library. | — |
+| `golang.org/x/sys` v0.50.0 | `internal/backend` (Linux) | open(2) with O_EXCL/O_DIRECT, fstat, BLKSSZGET/BLKPBSZGET/BLKDISCARD ioctls, fallocate. Maintained by the Go team; the stdlib `syscall` package is frozen and lacks these. | M2 |
 
-Pre-approved for later milestones: `golang.org/x/sys` (ioctls, M2+), a TUI library
+Pre-approved for later milestones: a TUI library
 (`charmbracelet/bubbletea` + `lipgloss`, M9), a PDF library (`go-pdf/fpdf`, M7),
 a QR library (M7), and `golang.org/x/mod/sumdb/note` (signed notes, M8, if useful).
 

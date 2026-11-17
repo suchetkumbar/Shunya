@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: Milestone 1 — device discovery implemented. Updated at every milestone.
+> Status: Milestone 2 — backends, guards and lab lock implemented. Updated at every milestone.
 
 Shunya is a verifiable secure data-wiping tool (SIH25070). It picks the strongest
 NIST SP 800-88 method each medium supports, wipes it (including hidden areas), verifies
@@ -10,7 +10,7 @@ recorded in a public append-only transparency log.
 ## Components
 
 ```
-cmd/shunya           CLI + TUI: list (M1), plan, wipe, keys
+cmd/shunya           CLI + TUI: list (M1), guard (M2), plan, wipe, keys
 cmd/shunya-verify    offline certificate verifier + `serve` (HTTP API, transparency log, web page)
 
 internal/sysfs       sysfs/procfs readers over fs.FS (fakeable in tests)
@@ -26,7 +26,8 @@ internal/cert        certificate schema, signing, PDF, QR
 internal/keys        root → station key hierarchy, revocation
 internal/tlog        RFC 6962 Merkle tree, C2SP checkpoints, proofs
 internal/canary      HMAC sector canaries + residue scanner (lab harness)
-lab/                 QEMU lab scripts, capability probe, lab/check (result assertions)
+lab/                 QEMU lab scripts, capability probe, lab/check (result assertions),
+                     lab/tests (block-device tests, -tags labtest, run as root in the VM)
 design/              committed project documentation
 ```
 
@@ -57,8 +58,9 @@ Windows ─ WSL2 (nested KVM) ─ Debian ─ QEMU/KVM ─ Alpine lab VM
                                                    └─ sdc   USB mass-storage target
 ```
 
-`make lab-up && make lab-test && make lab-down` boots the VM, pushes the binaries over
-SSH, runs them plus the capability probe, pulls results into `lab/results/` and stops the VM.
+`make lab-up && make lab-test && make lab-down` boots the VM, pushes the lab binaries over
+SSH, runs them (and with `PROBE=1` the capability probe), pulls results into `lab/results/`
+and stops the VM.
 See `LAB_CAPABILITIES.md` for which hardware features the lab can emulate.
 
 ## Device discovery (Milestone 1)
@@ -111,3 +113,36 @@ Fake trees are text specs in `internal/device/testdata/sysfs/*.spec`, loaded by
 `internal/sysfs/sysfstest`. The scenarios are a workstation, LVM-on-LUKS, a server with
 RAID1 and btrfs, the lab VM, and WSL. `make lab-test` runs `shunya list` in the VM and
 `lab/check` asserts the result. `PROBE=1 make lab-test` also reruns the M0 capability probe.
+
+## Backends and guards (Milestone 2)
+
+```
+             shunya guard /dev/X                      OpenBlock(env, /dev/X, opts)
+                    │                                          │
+                    ▼                                          ▼
+backend.Check ── device.EnumerateWith(sysfs, protect=self-exe) ─┤ refused → RefusalError
+  absolute refusals (every build)                               │ (device never opened)
+  labLock()  dev: QEMU/KVM DMI + token   release: none          ▼
+                                       Confirmation (release: required)
+                                                                ▼
+                                       open O_EXCL|O_CLOEXEC[|O_DIRECT|O_SYNC]  (RDONLY if dry-run)
+                                                                ▼
+                                       fstat/BLKSSZGET/BLKPBSZGET == selection, else ErrIdentityChanged
+                                                                ▼
+                                       first WriteAt/Discard: Check again + identity compare (TOCTOU)
+```
+
+- **Build kinds:**
+
+  | Build | Tag | Lab lock | Confirmation | Lab token |
+  |---|---|---|---|---|
+  | dev | (none) | yes | no | none, so it refuses every device |
+  | release | `release` | no | required | none |
+  | lab | (dev) | yes | no | yes (`make build-lab`, never shipped) |
+
+- **Testing without devices:** `blockOps` (open, probe, discard) is a struct of functions
+  that tests replace, so guard logic runs on the host with no device node opened.
+- **`Target` rules:** I/O must be sector-aligned and in range, and targets never grow.
+  `O_DIRECT` buffers must be aligned (`AlignedBuffer`).
+- **Verification:** `make test` and `make lint` run every package under all three tag sets
+  (dev, release, labtest) and for Linux and Windows.

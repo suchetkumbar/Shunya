@@ -9,8 +9,8 @@ permissions:
 
 jobs:
   check:
-    # CI never runs lab or destructive tests: those need the `lab` build tag and
-    # only run inside the QEMU lab VM via `make lab-test`.
+    # CI never runs lab or destructive tests: those need the `labtest` build tag, a lab token
+    # and the QEMU lab VM (`make lab-test`); under -tags labtest here they report SKIPPED.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,5 +29,5 @@ jobs:
         run: make fuzz FUZZTIME=5s
       - name: govulncheck
         run: make vulncheck
-      - name: Build (linux + windows, static, reproducible flags)
-        run: make build-linux build-windows
+      - name: Build (linux dev + release, windows; static, reproducible flags)
+        run: make build-linux build-release build-windows

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"shunya/internal/sysfs"
 	"shunya/internal/sysfs/sysfstest"
 )
 
@@ -297,5 +298,27 @@ size = banana
 	}
 	if _, err := Enumerate(fsys); err == nil {
 		t.Fatal("want error for unparsable size")
+	}
+}
+
+func TestEnumerateExtraProtect(t *testing.T) {
+	fsys, err := sysfstest.Load(filepath.Join("testdata", "sysfs", "server.spec"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The running binary lives on md0 (9:0); both RAID members must become PROTECTED.
+	r, err := EnumerateWith(fsys, Options{Protect: []Protect{{Dev: sysfs.DevNum{Major: 9, Minor: 0}, Why: "holds the running shunya binary"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDevices(t, r, map[string]want{
+		"sda": {transport: TransportSATA, media: MediaHDD, status: StatusProtected,
+			reasons: []string{"holds the running shunya binary via md0 → sda1"}},
+		"sdb": {transport: TransportSATA, media: MediaHDD, status: StatusProtected},
+	})
+	for _, d := range r.Devices {
+		if d.Name == "sda" && (len(d.Partitions) != 1 || d.Partitions[0].DevNum != "8:1") {
+			t.Errorf("sda partitions %+v", d.Partitions)
+		}
 	}
 }

@@ -4,7 +4,7 @@
 
 /sys/class/dmi/id/sys_vendor = QEMU
 /sys/class/dmi/id/product_name = Standard PC (Q35 + ICH9, 2009)
-/etc/shunya-lab = 0123456789abcdef
+/etc/shunya-lab = 5d1f0c7e2a9b4c6d8e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f
 
 disk vda 253:0 /sys/devices/pci0000:00/0000:00:02.0/virtio1/block/vda
 size = 4194304

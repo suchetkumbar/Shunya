@@ -120,6 +120,7 @@ type Device struct {
 type Partition struct {
 	Name        string   `json:"name"`
 	Path        string   `json:"path"`
+	DevNum      string   `json:"dev"`
 	Number      uint64   `json:"number"`
 	StartSector uint64   `json:"start_sector"` // in 512-byte units, as sysfs reports
 	SizeBytes   uint64   `json:"size_bytes"`

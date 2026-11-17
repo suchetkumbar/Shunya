@@ -12,10 +12,27 @@ import (
 	"shunya/internal/sysfs"
 )
 
+// Options adjusts enumeration.
+type Options struct {
+	// Protect marks the disks underneath these device numbers PROTECTED, e.g. the
+	// filesystem holding the running shunya binary (st_dev of /proc/self/exe), which
+	// sysfs cannot reveal.
+	Protect []Protect
+}
+
+// Protect is one extra device to protect, with the reason shown to the operator.
+type Protect struct {
+	Dev sysfs.DevNum
+	Why string
+}
+
 // Enumerate discovers block devices from a file system rooted at "/" (os.DirFS("/") on
 // a live system). It fails closed: if mounts cannot be read it returns an error rather
 // than reporting disks as available.
-func Enumerate(fsys fs.FS) (*Report, error) {
+func Enumerate(fsys fs.FS) (*Report, error) { return EnumerateWith(fsys, Options{}) }
+
+// EnumerateWith is Enumerate with options.
+func EnumerateWith(fsys fs.FS, opts Options) (*Report, error) {
 	r := sysfs.New(fsys)
 	rep := &Report{System: System{
 		DMIVendor:  r.String("sys/class/dmi/id/sys_vendor"),
@@ -78,6 +95,14 @@ func Enumerate(fsys fs.FS) (*Report, error) {
 		use(name, func(chain []string) string { return role + via(chain) }, protect, func(d *Device, chain []string) {
 			d.Mounts = append(d.Mounts, MountRef{MountPoint: m.MountPoint, FSType: m.FSType, Source: m.Source, Via: chain, Namespace: m.ns})
 		})
+	}
+	for _, p := range opts.Protect {
+		name, ok := g.byDev[p.Dev]
+		if !ok {
+			continue // e.g. binary on tmpfs or overlay: no block device to protect
+		}
+		why := p.Why
+		use(name, func(chain []string) string { return why + via(chain) }, true, nil)
 	}
 	for _, s := range swaps {
 		name, ok := g.lookupDevPath(s.Path)
@@ -164,7 +189,7 @@ func newDevice(r *sysfs.Reader, g *graph, n *node) (*Device, error) {
 		start, _ := r.Uint(pn.devPath + "/start")
 		size, _ := r.Uint(pn.devPath + "/size")
 		d.Partitions = append(d.Partitions, Partition{
-			Name: pn.name, Path: "/dev/" + pn.name, Number: num,
+			Name: pn.name, Path: "/dev/" + pn.name, DevNum: pn.dev.String(), Number: num,
 			StartSector: start, SizeBytes: size * 512,
 			Holders: g.holderTree(pn.name, 0),
 		})

@@ -201,8 +201,9 @@ cmd_pull()  { # shellcheck disable=SC2046
 
 cmd_test() {
   is_running || die "VM not running (make lab-up)"
-  local bin="$REPO_DIR/bin/linux-amd64"
-  [ -x "$bin/shunya" ] || die "missing $bin/shunya (make build-linux)"
+  # bin/lab holds the token-bearing lab builds (make build-lab); they never leave the lab.
+  local bin="$REPO_DIR/bin/lab"
+  [ -x "$bin/shunya" ] && [ -x "$bin/backend.test" ] || die "missing $bin/{shunya,backend.test} (make build-lab)"
   local stamp out
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   out="$RESULTS_DIR/$stamp"
@@ -212,6 +213,11 @@ cmd_test() {
   cmd_push "$bin/shunya" "$w/shunya"
   log "running shunya list in VM (read-only)"
   cmd_run "$w/shunya list --all | tee $w/results/list.txt; $w/shunya list --json > $w/results/list.json"
+  log "shunya guard (read-only): boot disk and a target"
+  cmd_run "$w/shunya guard /dev/vda | tee $w/results/guard-vda.txt; $w/shunya guard /dev/nvme0n1 | tee $w/results/guard-nvme0n1.txt; true"
+  cmd_push "$bin/backend.test" "$w/backend.test"
+  log "running backend lab tests as root (writes to TARGET disks only)"
+  cmd_run "cd $w && SHUNYA_LAB=1 ./backend.test -test.v -test.count=1 > results/backend-lab.txt 2>&1; echo \$? > results/backend-lab.rc"
   if [ "${PROBE:-0}" = 1 ]; then
     cmd_push "$LAB_DIR/probe/probe.sh" "$w/probe.sh"
     log "running capability probe in VM (destructive to TARGET disks only)"
@@ -221,8 +227,13 @@ cmd_test() {
   cmd_pull "$w/results/." "$out"
   ln -sfn "$stamp" "$RESULTS_DIR/latest" 2>/dev/null || cp -r "$out/." "$RESULTS_DIR/latest/"
   log "results in $out"
+  log "backend lab tests:"
+  grep -E '^(=== RUN|--- |    backend_lab_test|PASS|FAIL|ok)' "$out/backend-lab.txt" | grep -v '^=== RUN' || true
+  local rc; rc="$(cat "$out/backend-lab.rc" 2>/dev/null || echo missing)"
   log "checking results against lab expectations"
-  (cd "$REPO_DIR" && go run ./lab/check "$out/list.json")
+  (cd "$REPO_DIR" && go run ./lab/check "$out/list.json") || return 1
+  [ "$rc" = 0 ] || { log "backend lab tests FAILED (exit $rc); see $out/backend-lab.txt"; return 1; }
+  log "backend lab tests PASSED"
 }
 
 cmd_down() {

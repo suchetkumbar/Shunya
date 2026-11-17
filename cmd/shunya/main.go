@@ -1,20 +1,22 @@
-// Command shunya is the Shunya CLI. Milestone 1 provides read-only device discovery:
+// Command shunya is the Shunya CLI.
 //
-//	shunya list [--json] [--all]
+//	shunya list [--json] [--all]     read-only device discovery (Milestone 1)
+//	shunya guard [--json] /dev/X     would the safety guards allow opening X? (Milestone 2)
 //
-// Nothing in this milestone opens a device node or writes anything.
+// Neither command opens a device node or writes anything.
 package main
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 
+	"shunya/internal/backend"
 	"shunya/internal/device"
 )
 
@@ -22,6 +24,8 @@ const usage = `usage: shunya <command> [flags]
 
 commands:
   list [--json] [--all]   list block devices, their media type and protection status
+  guard [--json] DEVICE   show whether the safety guards would allow DEVICE as a wipe
+                          target, and why (never opens the device)
 `
 
 func main() {
@@ -36,12 +40,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "list":
 		return cmdList(args[1:], stdout, stderr)
+	case "guard":
+		return cmdGuard(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
 	fmt.Fprintf(stderr, "shunya: unknown command %q\n\n%s", args[0], usage)
 	return 2
+}
+
+// liveEnv returns the running system's environment, or an exit code.
+func liveEnv(stderr io.Writer) (backend.Env, int) {
+	env, err := backend.LiveEnv()
+	if err != nil {
+		fmt.Fprintln(stderr, "shunya:", err)
+		if runtime.GOOS != "linux" {
+			return env, 3
+		}
+		return env, 1
+	}
+	return env, 0
+}
+
+func writeJSON(w, stderr io.Writer, v any) int {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintln(stderr, "shunya:", err)
+		return 1
+	}
+	return 0
 }
 
 func cmdList(args []string, stdout, stderr io.Writer) int {
@@ -52,26 +81,74 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
-	rep, err := enumerate()
-	if errors.Is(err, errUnsupported) {
-		fmt.Fprintln(stderr, "shunya:", err)
-		return 3
+	env, code := liveEnv(stderr)
+	if code != 0 {
+		return code
 	}
+	rep, err := device.EnumerateWith(env.FS, device.Options{Protect: env.Protect})
 	if err != nil {
 		fmt.Fprintln(stderr, "shunya: list:", err)
 		return 1
 	}
 	if *asJSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			fmt.Fprintln(stderr, "shunya:", err)
-			return 1
-		}
-		return 0
+		return writeJSON(stdout, stderr, rep)
 	}
 	printTable(stdout, rep, *all)
 	return 0
+}
+
+func cmdGuard(args []string, stdout, stderr io.Writer) int {
+	fl := flag.NewFlagSet("guard", flag.ContinueOnError)
+	fl.SetOutput(stderr)
+	asJSON := fl.Bool("json", false, "print JSON")
+	if err := fl.Parse(args); err != nil {
+		return 2
+	}
+	if fl.NArg() != 1 {
+		fmt.Fprint(stderr, "usage: shunya guard [--json] /dev/NAME\n")
+		return 2
+	}
+	env, code := liveEnv(stderr)
+	if code != 0 {
+		return code
+	}
+	v, err := backend.Check(env, fl.Arg(0))
+	if err != nil {
+		fmt.Fprintln(stderr, "shunya: guard:", err)
+		return 1
+	}
+	if *asJSON {
+		if c := writeJSON(stdout, stderr, v); c != 0 {
+			return c
+		}
+	} else {
+		printVerdict(stdout, v)
+	}
+	if !v.Allowed {
+		return 1
+	}
+	return 0
+}
+
+func printVerdict(w io.Writer, v *backend.Verdict) {
+	token := "no lab token"
+	if backend.HasLabToken() {
+		token = "lab token compiled in"
+	}
+	fmt.Fprintf(w, "build: %s (%s)\n", v.Build, token)
+	if v.Allowed {
+		d := v.Device
+		fmt.Fprintf(w, "ALLOWED  %s  %s %s  serial %s  %s\n", v.Path, d.Transport, d.Media.Type, orDash(d.Serial), d.Fingerprint.Value)
+		if backend.RequiresConfirmation() {
+			fmt.Fprintln(w, "         opening it will still require typed confirmation (last 4 characters of the serial)")
+		}
+	} else {
+		fmt.Fprintf(w, "REFUSED  %s\n", v.Path)
+		for _, r := range v.Reasons {
+			fmt.Fprintf(w, "  - %s\n", r)
+		}
+	}
+	fmt.Fprintln(w, "(checked from sysfs/procfs only; the device was not opened)")
 }
 
 func printTable(w io.Writer, rep *device.Report, all bool) {

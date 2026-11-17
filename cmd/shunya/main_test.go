@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"shunya/internal/backend"
 	"shunya/internal/device"
 	"shunya/internal/sysfs/sysfstest"
 )
@@ -46,6 +47,24 @@ func TestHuman(t *testing.T) {
 	for in, want := range map[uint64]string{0: "0B", 1023: "1023B", 1024: "1.0KiB", 1 << 30: "1.0GiB", 1000204886016: "931.5GiB"} {
 		if got := human(in); got != want {
 			t.Errorf("human(%d) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPrintVerdictRefused(t *testing.T) {
+	fsys, err := sysfstest.Load("../../internal/device/testdata/sysfs/lab-vm.spec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := backend.Check(backend.Env{FS: fsys}, "/dev/vda")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	printVerdict(&b, v)
+	for _, want := range []string{"REFUSED  /dev/vda", "  - PROTECTED: root filesystem / via vda3", "the device was not opened"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, b.String())
 		}
 	}
 }
