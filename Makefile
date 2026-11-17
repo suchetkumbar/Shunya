@@ -10,14 +10,19 @@ GOFLAGS_REPRO := -trimpath -buildvcs=false
 LDFLAGS       := -s -w -buildid=
 
 LAB_TOKEN_FILE := lab/secrets/lab-token
-CMDS := shunya-hello
+CMDS := shunya
 
-.PHONY: all build build-linux build-windows test race vet staticcheck vulncheck lint fmt-check ci clean \
-        lab-images lab-up lab-shell lab-test lab-down lab-reset
+.PHONY: all build build-linux build-windows windows-check test race fuzz vet staticcheck vulncheck lint \
+        fmt-check ci clean lab-images lab-up lab-shell lab-test lab-down lab-reset
 
 all: lint test build
 
-build: build-linux build-windows
+# windows-check compiles the Windows binaries without writing an .exe (on the dev host,
+# Windows Defender deletes freshly written .exe files from the repo; see DECISIONS).
+build: build-linux windows-check
+
+windows-check:
+	GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -o /dev/null ./...
 
 build-linux:
 	@mkdir -p $(BIN)/linux-amd64
@@ -33,6 +38,16 @@ test:
 
 race:
 	CGO_ENABLED=1 $(GO) test -race -count=1 $(PKGS)
+
+# Short fuzzing pass over every Fuzz* target, FUZZTIME each.
+FUZZTIME ?= 10s
+fuzz:
+	@for pkg in $$($(GO) list ./...); do \
+	  for t in $$($(GO) test -list '^Fuzz' $$pkg | grep '^Fuzz'); do \
+	    echo "== $$pkg $$t"; \
+	    $(GO) test -run='^$$' -fuzz="^$$t$$" -fuzztime=$(FUZZTIME) $$pkg || exit 1; \
+	  done; \
+	done
 
 vet:
 	$(GO) vet $(PKGS)

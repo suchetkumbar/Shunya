@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 0 (foundations and lab).** Nothing wipes anything yet.
+> **Status: Milestone 1 (device discovery).** `shunya list` is read-only. Nothing wipes anything yet.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -18,6 +18,8 @@ See `design/ARCHITECTURE.md`. Safety rules: `design/SAFETY.md`.
 ## Building (Linux / WSL)
 ```sh
 make lint test build        # static, reproducible binaries in bin/
+./bin/linux-amd64/shunya list          # read-only: disks, media type, PROTECTED/IN-USE
+./bin/linux-amd64/shunya list --json   # full detail: partitions, holders, mounts, fingerprint
 ```
 On Windows, run any target through WSL: `.\scripts\wsl.ps1 test`.
 

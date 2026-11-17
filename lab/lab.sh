@@ -202,23 +202,27 @@ cmd_pull()  { # shellcheck disable=SC2046
 cmd_test() {
   is_running || die "VM not running (make lab-up)"
   local bin="$REPO_DIR/bin/linux-amd64"
-  [ -x "$bin/shunya-hello" ] || die "missing $bin/shunya-hello (make build-linux)"
+  [ -x "$bin/shunya" ] || die "missing $bin/shunya (make build-linux)"
   local stamp out
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   out="$RESULTS_DIR/$stamp"
   mkdir -p "$out"
   local w=/home/$VM_USER/shunya
   cmd_run "rm -rf $w && mkdir -p $w/results && chown -R $VM_USER $w"
-  cmd_push "$bin/shunya-hello" "$w/shunya-hello"
-  cmd_push "$LAB_DIR/probe/probe.sh" "$w/probe.sh"
-  log "running shunya-hello in VM"
-  cmd_run "$w/shunya-hello | tee $w/results/hello.txt; $w/shunya-hello --json > $w/results/hello.json"
-  log "running capability probe in VM (destructive to TARGET disks only)"
-  cmd_run "sh $w/probe.sh $w/results" || log "probe returned non-zero (see results)"
+  cmd_push "$bin/shunya" "$w/shunya"
+  log "running shunya list in VM (read-only)"
+  cmd_run "$w/shunya list --all | tee $w/results/list.txt; $w/shunya list --json > $w/results/list.json"
+  if [ "${PROBE:-0}" = 1 ]; then
+    cmd_push "$LAB_DIR/probe/probe.sh" "$w/probe.sh"
+    log "running capability probe in VM (destructive to TARGET disks only)"
+    cmd_run "sh $w/probe.sh $w/results" || log "probe returned non-zero (see results)"
+  fi
   cmd_run "chown -R $VM_USER $w/results"
   cmd_pull "$w/results/." "$out"
   ln -sfn "$stamp" "$RESULTS_DIR/latest" 2>/dev/null || cp -r "$out/." "$RESULTS_DIR/latest/"
   log "results in $out"
+  log "checking results against lab expectations"
+  (cd "$REPO_DIR" && go run ./lab/check "$out/list.json")
 }
 
 cmd_down() {

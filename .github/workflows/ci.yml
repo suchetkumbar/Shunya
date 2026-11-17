@@ -25,7 +25,9 @@ jobs:
         run: make lint
       - name: Unit tests (race detector)
         run: make race
+      - name: Fuzz (short pass over every Fuzz* target)
+        run: make fuzz FUZZTIME=5s
       - name: govulncheck
         run: make vulncheck
       - name: Build (linux + windows, static, reproducible flags)
-        run: make build
+        run: make build-linux build-windows
