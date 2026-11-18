@@ -44,6 +44,13 @@
 | T29 | An interrupted or earlier sanitize is certified | M6: resume waits for a sanitize still running; a completed one is accepted only when the NVMe controller attests Global Data Erased for the same action; otherwise (and always for ATA) it sanitizes again. Markers planted before the erase must all be gone | mitigated (M6, pending-real-hardware) |
 | T30 | Firmware erase result can't be read back (crypto erase) | M6: 1024 HMAC markers at unpredictable positions must not survive; that shows the erase changed what the host reads, not that spare blocks were reached | partial (by design) |
 | T31 | Emulated disk with a physical-looking identity earns Purge | M6: DMI hypervisor detection marks every disk of a VM virtual; found and fixed in the M6 lab run | mitigated (M6) |
+| T32 | A certificate is edited (level, serial, result) | M7: Ed25519 over the canonical body; the file must be exactly canonical; every single-byte change fails (exhaustive test + fuzz) | mitigated (M7) |
+| T33 | Two encodings of one certificate, or a member the verifier ignores (malleability) | M7: strict RFC 8785 parser (duplicates, surrogates, UTF-8); bodies must re-encode to their signed bytes. Found in testing: `encoding/json` accepted `"Certificate"` for `"certificate"` | mitigated (M7) |
+| T34 | A signature for one document type is replayed as another | M7: domain-separated contexts per document type | mitigated (M7) |
+| T35 | A stolen station key signs backdated certificates | M7: revocation `compromised` refuses every certificate of the key, whatever its date. M8 log proofs will date certificates independently | mitigated (M7), refined in M8 |
+| T36 | Root key stolen from disk | M7: encrypted (PBKDF2-SHA256 600k + AES-256-GCM), kept offline; a stolen file still needs the passphrase. Hardware tokens later | partial (by design) |
+| T37 | A verifier uses an old revocation list | Offline verification cannot know about newer lists; the list number is printed, lists only grow. M8 publishes the current list | accepted (offline) |
+| T38 | The PDF is edited and shown instead of the JSON | M7: the PDF is a pure rendering; `shunya-verify --pdf` re-renders and compares bytes; the QR code leads to the JSON's ID | mitigated (M7) |
 
 ## Out of scope
 - Physical destruction (NIST "Destroy").
@@ -66,3 +73,7 @@
   reads changed. They do not show that over-provisioned blocks were erased or that a key
   was destroyed. That rests on the drive's capability bits and SP 800-88's acceptance of
   the command. That is why Sanitize stays pending real hardware.
+- **M7: what a certificate proves.** A valid certificate proves that a station the root
+  certified signed this summary of its journal, and that nothing has changed since. It
+  repeats what the journal and the read-back showed. It adds no evidence about the media
+  itself. Its time is the station's own claim until the transparency log (M8) dates it.

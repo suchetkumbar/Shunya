@@ -12,9 +12,14 @@ import (
 	"strings"
 )
 
-// keyFileHeader marks a temporary development station key. Milestone 7 replaces it
-// with station keys certified by an offline organisation root.
-const keyFileHeader = "shunya-dev-station-key-v1"
+// keyFileHeader marks a station key file. Whether the key is trusted is not a property
+// of the file: a station key is trusted once the organisation's root certifies it
+// (shunya keys issue-station, Milestone 7). Files written by Milestones 3–6 carry
+// legacyKeyFileHeader and still load.
+const (
+	keyFileHeader       = "shunya-station-key-v1"
+	legacyKeyFileHeader = "shunya-dev-station-key-v1"
+)
 
 // GenerateKeyFile creates a new Ed25519 station key at path (mode 0600, never
 // overwriting) and returns its public key.
@@ -54,7 +59,7 @@ func LoadKeyFile(path string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 	head, enc, ok := strings.Cut(string(bytes.TrimSpace(b)), " ")
-	if !ok || head != keyFileHeader {
+	if !ok || (head != keyFileHeader && head != legacyKeyFileHeader) {
 		return nil, fmt.Errorf("key %s: not a %s file", path, keyFileHeader)
 	}
 	seed, err := base64.StdEncoding.Strict().DecodeString(enc)

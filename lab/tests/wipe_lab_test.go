@@ -41,7 +41,7 @@ func workDir(t *testing.T) (dir, key string) {
 		t.Fatal(err)
 	}
 	key = filepath.Join(dir, "station.key")
-	shunya(t, 0, "keys", "gen-dev", key)
+	shunya(t, 0, "keys", "gen-station", key)
 	return dir, key
 }
 

@@ -4,7 +4,8 @@
 //	shunya guard [--json] /dev/X     would the safety guards allow opening X? (Milestone 2)
 //	shunya wipe ...                  overwrite wipe, dry run unless --execute (Milestone 3)
 //	shunya journal show ...          verify and print a progress journal
-//	shunya keys gen-dev FILE         temporary station signing key
+//	shunya keys ...                  station keys, offline root, revocation (Milestone 7)
+//	shunya cert issue|show|pdf       erasure certificates (Milestone 7)
 //	shunya ata identify|hidden|unlock  ATA IDENTIFY, hidden areas, Security Erase recovery (Milestone 5)
 //
 // list and guard never open a device node or write anything; wipe writes only with
@@ -36,7 +37,10 @@ commands:
   wipe --resume ...       continue an interrupted wipe from its journal
   verify --journal J ...  re-verify a finished wipe (full, or --sample N --seed HEX)
   journal show JOURNAL    verify a progress journal and show its history
-  keys gen-dev FILE       create a temporary station signing key (until Milestone 7)
+  keys ...                station keys, the offline root key, station certificates and
+                          revocation (shunya keys help)
+  cert issue|show|pdf     erasure certificates: issue from a verified journal, verify, render
+                          the PDF (shunya cert help)
   plan DEVICE            every erase method the drive supports, its NIST level, and the recommendation (read-only)
   nvme identify DEVICE    decode NVMe Identify Controller/Namespace (read-only; --ctrl FILE parses saved data)
   nvme sanitize-log DEV   NVMe Sanitize Status log
@@ -67,6 +71,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdJournal(args[1:], stdout, stderr)
 	case "keys":
 		return cmdKeys(args[1:], stdout, stderr)
+	case "cert":
+		return cmdCert(args[1:], stdout, stderr)
 	case "ata":
 		return cmdATA(args[1:], stdout, stderr)
 	case "nvme":

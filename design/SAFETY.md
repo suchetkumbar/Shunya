@@ -78,6 +78,11 @@ machine Shunya runs on. They override every other requirement.
 27. **Capabilities, not command status.** A method is offered only when the drive advertises it (SANICAP, FNA, IDENTIFY word 59). QEMU accepts a crypto Format with FNA = 0; Shunya refuses it.
 28. **Virtual machine → virtual disks.** If DMI says the machine is a VM, every disk is treated as emulated (never Purge), whatever its model string says.
 29. **One real firmware erase in the lab, none on the host.** The lab ran Format NVM (user data erase) on the QEMU NVMe target only. Sanitize (NVMe and ATA) is proven against the simulated drives only (pending-real-hardware).
+30. **No certificate without a verified, finished wipe.** It is refused for an unfinished wipe, for a wipe with no verification or any failed verification, and while an HPA restore is pending. The certificate says `erased-and-verified` or does not exist.
+31. **Certificates never claim more than the plan.** The level is the plan's. The verifier refuses Purge for an overwrite or a virtual disk, even if the signature is valid.
+32. **No secrets in certificates.** Pattern keys, marker keys and the temporary ATA password stay in the journal. The tests search the signed bytes for them.
+33. **Root key offline and encrypted.** `root.key` is encrypted under a passphrase (at least 12 characters, no echo), written 0600 with O_EXCL, and refused when readable by others. No command copies it anywhere. Init-root refuses to replace an existing root.
+34. **Dev keys are labelled, never trusted silently.** Certificates from uncertified keys say so in the JSON and on the PDF. Verifiers refuse them unless `--allow-dev-key`, and then warn.
 
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is

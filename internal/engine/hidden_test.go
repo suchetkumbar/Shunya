@@ -144,7 +144,7 @@ func erasePlan(t *testing.T) Plan {
 func TestReplayEraseJournal(t *testing.T) {
 	jpath := filepath.Join(t.TempDir(), "j")
 	w, _ := journal.Create(jpath, jkey)
-	rec := JournalRecorder{w}
+	rec := JournalRecorder{W: w}
 	if err := rec.Start("id", "t", erasePlan(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestReplayEraseRejects(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			jpath := filepath.Join(t.TempDir(), "j")
 			w, _ := journal.Create(jpath, jkey)
-			rec := JournalRecorder{w}
+			rec := JournalRecorder{W: w}
 			rec.Start("id", "t", erasePlan(t))
 			rec.Firmware(sanitize.Event{Event: EvMarkersPlanted}) // isolate each case from the marker rule
 			f(rec)
@@ -204,7 +204,7 @@ func TestReplayEraseRejects(t *testing.T) {
 	} {
 		jpath := filepath.Join(t.TempDir(), "j")
 		w, _ := journal.Create(jpath, jkey)
-		rec := JournalRecorder{w}
+		rec := JournalRecorder{W: w}
 		p, _ := NewPlan(PlanInput{Target: eid, Media: device.MediaHDD, SizeBytes: 1 << 20, SectorSize: 512})
 		p.GenerateKeys(nil)
 		rec.Start("id", "t", p)

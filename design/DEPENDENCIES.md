@@ -9,6 +9,7 @@ with its justification.
 | Module | Used by | Why | Added |
 |---|---|---|---|
 | `golang.org/x/sys` v0.50.0 | `internal/backend` (Linux) | open(2) with O_EXCL/O_DIRECT, fstat, BLKSSZGET/BLKPBSZGET/BLKDISCARD ioctls, fallocate. Maintained by the Go team; the stdlib `syscall` package is frozen and lacks these. | M2 |
+| `golang.org/x/term` v0.47.0 | `cmd/shunya` (keys) | Reads the root key passphrase without echo, on Linux and Windows. Go team. v0.47.0 (2026-10-09) rather than v0.48.0 (2026-11-09, nine days old when added); it needs only `x/sys`, already present. Approved by the user for M7. | M7 |
 
 No module was added in M3. `golang.org/x/sys` also provides flock and `O_NOFOLLOW` for the journal and `st_dev` for the journal placement check. The random pattern uses the standard library's `crypto/aes` + `crypto/cipher` CTR; ChaCha20 would need `x/crypto`, which isn't pre-approved. Leak checks use the in-tree `internal/testutil/leakcheck` instead of `go.uber.org/goleak`.
 
@@ -46,3 +47,14 @@ reference only (not vendored, not linked), the specifications were cross-checked
 
 The test data are public IDENTIFY dumps (cited in `internal/ata/testdata/identify/SOURCES.md`)
 and data recorded from the lab's QEMU drives (`internal/nvme/testdata/SOURCES.md`).
+
+## Milestone 7: one new module, PDF and QR in-tree
+`golang.org/x/term` (above). As agreed, the PDF and QR Code were written in-tree rather
+than taking the pre-approved `go-pdf/fpdf` and a QR library. Both are small (about 300 and
+400 lines), deterministic and fully tested, and the binaries stay reproducible with a
+single external module family. Key derivation and encryption use the standard library
+(`crypto/pbkdf2`, `crypto/aes`, `crypto/cipher`); `x/crypto` (Argon2id, scrypt) is not
+needed.
+
+Lab VM packages added in M7, used only by `TestLabCertificate` to check Shunya's PDF and
+QR output independently: `qpdf`, `poppler-utils` (pdftotext, pdftoppm), `zbar` (zbarimg).

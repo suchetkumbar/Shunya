@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 6 (NVMe layer and planner).** `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
+> **Status: Milestone 7 (certificates).** A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -31,7 +31,7 @@ device outside the lab VM). The station key must be mode 0600 and is refused oth
 so on WSL use a Linux directory: drives under `/mnt/` have no Unix permissions.
 ```sh
 D=$(mktemp -d) && truncate -s 256M $D/disk.img
-shunya keys gen-dev $D/station.key                   # temporary key until Milestone 7
+shunya keys gen-station $D/station.key               # station signing key (certify it: Milestone 7 below)
 shunya wipe --image $D/disk.img                      # dry run: prints the plan, writes nothing
 shunya wipe --execute --verify --journal $D/wipe.journal --key $D/station.key --image $D/disk.img
 #   Ctrl-C (or kill -9) part-way, then:
@@ -80,6 +80,28 @@ shunya wipe --method nvme-sanitize-crypto-erase /dev/nvme0n1   # dry run; add --
 - **Sanitize** runs inside the drive: Shunya polls and journals it, and a resume after a crash waits for it rather than starting a second one.
 - **Refusals:** if the erase would hit other namespaces or a multi-controller subsystem.
 - **Testing:** the lab ran a real Format NVM on QEMU. QEMU has no Sanitize, so that is tested against a simulated controller and is *pending real hardware*.
+
+### Certificates and keys (Milestone 7)
+```sh
+R=$D/root                                                  # on an offline machine in practice
+shunya keys init-root $R                                   # root.key (passphrase), root.pub, revocations.json
+shunya keys issue-station --root $R/root.key --station-key $D/station.key --name bay-1 --out $D/station.cert.json
+shunya wipe --execute --verify --journal $D/w.journal --key $D/station.key --station-cert $D/station.cert.json --image $D/disk.img
+#   -> $D/w.journal.cert.json and $D/w.journal.cert.pdf
+shunya-verify --root $R/root.pub --revocations $R/revocations.json --pdf $D/w.journal.cert.pdf $D/w.journal.cert.json
+shunya keys revoke --root $R/root.key --revocations $R/revocations.json --key-id ed25519:... --reason retired
+shunya cert issue --journal OLD.journal --key K            # certificate for an earlier wipe
+```
+- **What it is:** a canonical JSON (RFC 8785) file signed with Ed25519 by a station key that
+  the offline root certified. Changing any byte of it fails verification. The PDF is
+  rendered from the JSON, and `--pdf` checks it byte for byte. The QR code holds the
+  verification URL and the certificate's SHA-256 ID.
+- **Revocation:** a retired station's earlier certificates stay valid. A compromised
+  station's certificates all fail, because their dates are its own claim until Milestone 8
+  logs them.
+- **Dev keys:** journals from Milestones 3–6 (dev keys) can be certified. They are marked,
+  and verifiers refuse them without `--allow-dev-key`.
+- **Design:** `design/CERTIFICATES.md`.
 
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):

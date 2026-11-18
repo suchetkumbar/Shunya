@@ -164,7 +164,7 @@ func journalFor(t *testing.T, p Plan, f func(JournalRecorder)) error {
 	t.Helper()
 	jpath := filepath.Join(t.TempDir(), "j")
 	w, _ := journal.Create(jpath, jkey)
-	rec := JournalRecorder{w}
+	rec := JournalRecorder{W: w}
 	if err := rec.Start("id", "t", p); err != nil {
 		t.Fatal(err)
 	}

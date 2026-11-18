@@ -44,7 +44,7 @@ func TestJournalInterruptResumeCrashResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := JournalRecorder{w}
+	rec := JournalRecorder{W: w}
 	if err := rec.Start(NewWipeID(), "shunya-test", p); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestJournalInterruptResumeCrashResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec = JournalRecorder{w}
+	rec = JournalRecorder{W: w}
 	if err := rec.Resumed(st, log.TornBytes); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestJournalInterruptResumeCrashResume(t *testing.T) {
 	if st.Pending() != StopUnclean {
 		t.Fatalf("pending %q, want unclean stop", st.Pending())
 	}
-	rec = JournalRecorder{w}
+	rec = JournalRecorder{W: w}
 	if err := rec.Resumed(st, log.TornBytes); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestReplayVerifiedAfterDone(t *testing.T) {
 	p := planFor(t, tg, 64*kib, 64*kib)
 	jpath := filepath.Join(t.TempDir(), "j")
 	w, _ := journal.Create(jpath, jkey)
-	rec := JournalRecorder{w}
+	rec := JournalRecorder{W: w}
 	rec.Start("id", "t", p)
 	if _, err := Run(context.Background(), tg, p, rec, RunOptions{}); err != nil {
 		t.Fatal(err)

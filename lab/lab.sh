@@ -203,7 +203,7 @@ cmd_test() {
   is_running || die "VM not running (make lab-up)"
   # bin/lab holds the token-bearing lab builds (make build-lab); they never leave the lab.
   local bin="$REPO_DIR/bin/lab"
-  [ -x "$bin/shunya" ] && [ -x "$bin/shunya-broken" ] && [ -x "$bin/backend.test" ] || die "missing $bin/{shunya,shunya-broken,backend.test} (make build-lab)"
+  [ -x "$bin/shunya" ] && [ -x "$bin/shunya-broken" ] && [ -x "$bin/shunya-verify" ] && [ -x "$bin/backend.test" ] || die "missing $bin/{shunya,shunya-broken,shunya-verify,backend.test} (make build-lab)"
   local stamp out
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   out="$RESULTS_DIR/$stamp"
@@ -214,6 +214,7 @@ cmd_test() {
   cmd_run "for i in 1 2 3; do apk add --quiet $VM_PACKAGES && break; sleep 3; done" || die "apk add failed in the VM"
   cmd_push "$bin/shunya" "$w/shunya"
   cmd_push "$bin/shunya-broken" "$w/shunya-broken"
+  cmd_push "$bin/shunya-verify" "$w/shunya-verify"
   log "running shunya list in VM (read-only)"
   cmd_run "$w/shunya list --all | tee $w/results/list.txt; $w/shunya list --json > $w/results/list.json"
   log "shunya guard (read-only): boot disk and a target"

@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: Milestone 6 — NVMe layer, ATA SANITIZE and the method planner implemented. Updated at every milestone.
+> Status: Milestone 7 — certificates and the key hierarchy implemented. Updated at every milestone.
 
 Shunya is a verifiable secure data-wiping tool (SIH25070). It picks the strongest
 NIST SP 800-88 method each medium supports, wipes it (including hidden areas), verifies
@@ -10,8 +10,9 @@ recorded in a public append-only transparency log.
 ## Components
 
 ```
-cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show, keys gen-dev (M3), verify (M4), plan
-cmd/shunya-verify    offline certificate verifier + `serve` (HTTP API, transparency log, web page)
+cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show (M3), verify (M4), plan (M6),
+                     keys, cert (M7)
+cmd/shunya-verify    offline certificate verifier (M7); `serve` (HTTP API, transparency log, web page) in M8
 
 internal/sysfs       sysfs/procfs readers over fs.FS (fakeable in tests)
 internal/device      enumeration model, fingerprint, media classification (+ confidence)
@@ -23,7 +24,12 @@ internal/engine      NIST planner, overwrite pipeline, verification
 internal/journal     signed, hash-chained append-only progress journal (crash-safe resume)
 internal/testutil    leakcheck: goroutine-leak checker for tests (in place of goleak)
 internal/jcs         RFC 8785 canonical JSON
-internal/cert        certificate schema, signing, PDF, QR
+internal/cert        certificate schema, signing, verification policy
+internal/certpdf     the certificate's PDF rendering (internal/pdf + internal/qr)
+internal/certcheck   offline verification shared by shunya-verify and shunya cert
+internal/pdf         minimal deterministic PDF 1.7 writer
+internal/qr          QR Code encoder (byte mode, level M, versions 1–10)
+internal/buildinfo   SHA-256 of the running executable
 internal/keys        root → station key hierarchy, revocation
 internal/tlog        RFC 6962 Merkle tree, C2SP checkpoints, proofs
 internal/canary      HMAC sector canaries, Aho-Corasick residue scanner, planted files,
@@ -214,8 +220,8 @@ engine.Run
   | 4 | verification failed |
   | 5 | interrupted, resumable |
 
-- **Signing key:** temporary dev station key (`shunya keys gen-dev`, file mode 0600,
-  refused if group- or world-readable) until the M7 key hierarchy.
+- **Signing key:** station key (`shunya keys gen-station`; `gen-dev` is the M3 name), file
+  mode 0600, refused if group- or world-readable. Certified by the root from M7.
 
 ## Verification and the forensic canary harness (Milestone 4)
 
@@ -422,3 +428,33 @@ internal/nvme/nvmefake: simulated controller from the lab's recorded QEMU Identi
   the machine is a VM, every physical-looking disk is treated as emulated. The lab's SATA
   disks have custom model strings and looked physical before. A passed-through disk is
   under-claimed, never over-claimed.
+
+## Certificates and the key hierarchy (Milestone 7)
+
+Full design: `CERTIFICATES.md`. In short:
+
+- `internal/jcs` is RFC 8785 with a strict parser. It refuses duplicate members, lone
+  surrogates, invalid UTF-8, out-of-range numbers and depth over 64. `Marshal` also refuses
+  integers beyond 2^53.
+- `internal/keys` holds three things:
+  - the root key file (PBKDF2-SHA256 → AES-256-GCM, header bound as AAD);
+  - station certificates;
+  - numbered revocation lists.
+
+  Every signature is over context ‖ 0 ‖ JCS.
+- `internal/cert` holds the schema, `Sign` and `Verify`. A file must be exactly its canonical
+  form. The signature covers the body's bytes as they are, and the body must re-encode to
+  those bytes (no unknown, missing, defaulted or case-mismatched members). The verifier
+  checks the policy: station chain, validity, revocation, dev key, and consistency (no Purge
+  for an overwrite or a virtual disk).
+- `engine.BuildCertificate` summarises a replayed journal. It copies no secrets: pattern
+  keys, marker keys and the ATA password stay in the journal. It refuses unfinished,
+  unverified or failed wipes and a pending HPA restore. The journal's start record now holds
+  the wiping executable's SHA-256 (`build_hash`).
+- `internal/certpdf` is a pure function of the body and its ID. `shunya-verify --pdf`
+  re-renders and compares bytes.
+- `wipe --station-cert` issues `JOURNAL.cert.json` and `.cert.pdf` after a verified wipe.
+  `cert issue` does it later.
+
+Exit codes added: `cert issue` returns 4 when the journal is not certifiable;
+`shunya-verify` returns 0 valid, 1 invalid, 2 usage.

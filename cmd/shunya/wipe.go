@@ -16,13 +16,14 @@ import (
 	"time"
 
 	"shunya/internal/backend"
+	"shunya/internal/buildinfo"
 	"shunya/internal/device"
 	"shunya/internal/engine"
 	"shunya/internal/journal"
 )
 
-// version is reported in journals (and, from Milestone 7, certificates).
-var version = "0.6.0-dev"
+// version is reported in journals and certificates.
+var version = "0.7.0-dev"
 
 // wrapTarget lets tests slow down or observe the target; identity in production.
 var wrapTarget = func(t backend.Target) backend.Target { return t }
@@ -36,7 +37,7 @@ const (
 type wipeFlags struct {
 	execute, resume, verify, direct, asJSON, yesReally bool
 	image, journal, key, patterns, confirm, approved   string
-	seed, method, hpa                                  string
+	seed, method, hpa, stationCert, verifyURL          string
 	sector, chunkMiB, syncMiB, passes, sample          int
 }
 
@@ -58,7 +59,9 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 	fl.IntVar(&f.chunkMiB, "chunk-mib", engine.DefaultChunk>>20, "write size in MiB")
 	fl.IntVar(&f.syncMiB, "sync-mib", engine.DefaultSyncEvery>>20, "sync and checkpoint every N MiB")
 	fl.StringVar(&f.journal, "journal", "", "progress journal file, on the tool's own medium (required with --execute)")
-	fl.StringVar(&f.key, "key", "", "station signing key (shunya keys gen-dev; required with --execute)")
+	fl.StringVar(&f.key, "key", "", "station signing key (shunya keys gen-station; required with --execute)")
+	fl.StringVar(&f.stationCert, "station-cert", "", "the station's certificate (shunya keys issue-station): issue a certificate when the wipe is verified")
+	fl.StringVar(&f.verifyURL, "verify-url", "", "verification URL prefix for the certificate's QR code")
 	fl.StringVar(&f.confirm, "confirm", "", "release builds: last 4 characters of the device serial")
 	fl.BoolVar(&f.yesReally, "yes-really", false, "release builds, fleet mode: skip typing, device must be in --approved")
 	fl.StringVar(&f.approved, "approved", "", "fleet mode: file of approved device fingerprints")
@@ -84,13 +87,34 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "shunya: wipe --resume takes the target from the journal; give no device or --image")
 			return 2
 		}
-		return resumeWipe(f, stdout, stderr)
+		return certifyAfter(f, resumeWipe(f, stdout, stderr), stdout, stderr)
 	}
 	if (fl.NArg() == 1) == (f.image != "") {
 		fmt.Fprint(stderr, "usage: shunya wipe [flags] (/dev/NAME | --image FILE)\n       shunya wipe --resume --execute --journal FILE --key FILE\n")
 		return 2
 	}
-	return freshWipe(f, fl.Arg(0), stdout, stderr)
+	return certifyAfter(f, freshWipe(f, fl.Arg(0), stdout, stderr), stdout, stderr)
+}
+
+// certifyAfter issues the certificate after a successful --execute run (with
+// --station-cert), or says how to.
+func certifyAfter(f wipeFlags, code int, stdout, stderr io.Writer) int {
+	if code != 0 || !f.execute {
+		return code
+	}
+	if f.stationCert == "" {
+		fmt.Fprintln(stdout, "Certificate: shunya cert issue --journal", f.journal, "--key", f.key, "--station-cert STATION.cert.json")
+		return 0
+	}
+	if err := issueCertificate(issueRequest{journal: f.journal, key: f.key, stationCert: f.stationCert, verifyURL: f.verifyURL}, stdout); err != nil {
+		fmt.Fprintln(stderr, "shunya: wipe: certificate:", err)
+		if errors.Is(err, engine.ErrNotCertifiable) {
+			fmt.Fprintln(stdout, "No certificate: the wipe has no passing verification yet (add --verify or --sample, or run shunya verify).")
+			return 0
+		}
+		return 1
+	}
+	return 0
 }
 
 // targetSpec is a wipe target before it is opened.
@@ -354,7 +378,12 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer w.Close()
-	rec := engine.JournalRecorder{W: w}
+	bh, err := buildinfo.ExecutableHash()
+	if err != nil {
+		fmt.Fprintln(stderr, "shunya: wipe: build hash:", err)
+		return 1
+	}
+	rec := engine.JournalRecorder{W: w, BuildHash: bh}
 	wipeID := engine.NewWipeID()
 	if err := rec.Start(wipeID, "shunya "+version, plan); err != nil {
 		fmt.Fprintln(stderr, "shunya: wipe: journal:", err)
@@ -739,20 +768,6 @@ func cmdJournal(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "; resumed %s\n", in.ResumedAt.Format(time.RFC3339))
 	}
-	return 0
-}
-
-func cmdKeys(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 2 || args[0] != "gen-dev" {
-		fmt.Fprint(stderr, "usage: shunya keys gen-dev FILE   (temporary station key until Milestone 7)\n")
-		return 2
-	}
-	pub, err := journal.GenerateKeyFile(args[1])
-	if err != nil {
-		fmt.Fprintln(stderr, "shunya: keys:", err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "wrote %s (mode 0600)\nkey id: %s\npublic: %x\n", args[1], journal.KeyID(pub), []byte(pub))
 	return 0
 }
 

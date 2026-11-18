@@ -10,7 +10,7 @@ GOFLAGS_REPRO := -trimpath -buildvcs=false
 LDFLAGS       := -s -w -buildid=
 
 LAB_TOKEN_FILE := lab/secrets/lab-token
-CMDS := shunya
+CMDS := shunya shunya-verify
 
 # Every build kind is linted and tested: dev (default), release, and the lab-only tests.
 TAGSETS := "" release labtest
@@ -55,20 +55,21 @@ build-lab:
 	@mkdir -p $(BIN)/lab
 	@tok="$$(cat $(LAB_TOKEN_FILE))"; \
 	  GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -ldflags "$(LDFLAGS) -X shunya/internal/backend.labToken=$$tok" -o $(BIN)/lab/shunya ./cmd/shunya && \
+	  GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -ldflags '$(LDFLAGS)' -o $(BIN)/lab/shunya-verify ./cmd/shunya-verify && \
 	  GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -tags brokenwipe -ldflags "$(LDFLAGS) -X shunya/internal/backend.labToken=$$tok" -o $(BIN)/lab/shunya-broken ./cmd/shunya && \
 	  GOOS=linux GOARCH=amd64 $(GO) test -c -tags labtest $(GOFLAGS_REPRO) -ldflags "-X shunya/internal/backend.labToken=$$tok" -o $(BIN)/lab/backend.test ./lab/tests
 
 # Reproducibility demo: two builds of each kind from empty build caches must be identical.
 repro:
-	@for kind in dev release; do \
+	@for cmd in $(CMDS); do for kind in dev release; do \
 	  tags=$$([ $$kind = release ] && echo release); \
 	  for i in 1 2; do \
-	    c=$$(mktemp -d); GOCACHE=$$c GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -tags "$$tags" -ldflags '$(LDFLAGS)' -o $(BIN)/repro-$$kind-$$i ./cmd/shunya || exit 1; \
+	    c=$$(mktemp -d); GOCACHE=$$c GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -tags "$$tags" -ldflags '$(LDFLAGS)' -o $(BIN)/repro-$$cmd-$$kind-$$i ./cmd/$$cmd || exit 1; \
 	    chmod -R u+w $$c; rm -r $$c; \
 	  done; \
-	  sha256sum $(BIN)/repro-$$kind-1 $(BIN)/repro-$$kind-2; \
-	  cmp $(BIN)/repro-$$kind-1 $(BIN)/repro-$$kind-2 && echo "$$kind: byte-identical" || exit 1; \
-	done
+	  sha256sum $(BIN)/repro-$$cmd-$$kind-1 $(BIN)/repro-$$cmd-$$kind-2; \
+	  cmp $(BIN)/repro-$$cmd-$$kind-1 $(BIN)/repro-$$cmd-$$kind-2 && echo "$$cmd $$kind: byte-identical" || exit 1; \
+	done; done
 
 test:
 	@for tags in $(TAGSETS); do echo "== go test -tags '$$tags'"; $(GO) test -count=1 -tags "$$tags" $(PKGS) || exit 1; done

@@ -242,6 +242,17 @@ func TestKeyFile(t *testing.T) {
 	if _, err := LoadKeyFile(filepath.Join(dir, "bad.key")); err == nil {
 		t.Fatal("malformed key accepted")
 	}
+	// New keys carry the station header; keys written by Milestones 3–6 (dev header)
+	// still load, so their journals can still be resumed and certified.
+	raw, _ := os.ReadFile(p)
+	if !bytes.HasPrefix(raw, []byte("shunya-station-key-v1 ")) {
+		t.Errorf("header %q", raw[:24])
+	}
+	legacy := filepath.Join(dir, "legacy.key")
+	os.WriteFile(legacy, bytes.Replace(raw, []byte("shunya-station-key-v1"), []byte("shunya-dev-station-key-v1"), 1), 0o600)
+	if k2, err := LoadKeyFile(legacy); err != nil || !bytes.Equal(k2.Public().(ed25519.PublicKey), pub) {
+		t.Errorf("legacy key: %v", err)
+	}
 }
 
 func FuzzRead(f *testing.F) {

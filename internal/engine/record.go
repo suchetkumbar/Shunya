@@ -51,7 +51,9 @@ type HiddenEvent struct {
 type StartData struct {
 	WipeID string `json:"wipe_id"`
 	Tool   string `json:"tool"`
-	Plan   Plan   `json:"plan"`
+	// BuildHash is the SHA-256 of the wiping executable (Milestone 7; "" before).
+	BuildHash string `json:"build_hash,omitempty"`
+	Plan      Plan   `json:"plan"`
 }
 
 type posData struct {
@@ -91,8 +93,12 @@ func NewWipeID() string {
 	return hex.EncodeToString(b)
 }
 
-// JournalRecorder records engine progress in a signed journal.
-type JournalRecorder struct{ W *journal.Writer }
+// JournalRecorder records engine progress in a signed journal. BuildHash, if set, is
+// written into the start record (it ends up in the certificate).
+type JournalRecorder struct {
+	W         *journal.Writer
+	BuildHash string
+}
 
 var _ Recorder = JournalRecorder{}
 
@@ -101,7 +107,7 @@ func (j JournalRecorder) Start(wipeID, tool string, p Plan) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	_, err := j.W.Append(RecStart, StartData{WipeID: wipeID, Tool: tool, Plan: p})
+	_, err := j.W.Append(RecStart, StartData{WipeID: wipeID, Tool: tool, BuildHash: j.BuildHash, Plan: p})
 	return err
 }
 
@@ -197,6 +203,7 @@ type Interruption struct {
 type State struct {
 	WipeID        string
 	Tool          string
+	ToolBuildHash string
 	Plan          Plan
 	Pass          int   // next pass to write (len(Plan.Passes) when all are done)
 	Offset        int64 // synced offset within Pass
@@ -242,7 +249,7 @@ func Replay(log *journal.Log) (State, error) {
 			if err := sd.Plan.Validate(); err != nil {
 				return bad(i, "plan: %v", err)
 			}
-			st.WipeID, st.Tool, st.Plan, st.Started = sd.WipeID, sd.Tool, sd.Plan, r.At()
+			st.WipeID, st.Tool, st.ToolBuildHash, st.Plan, st.Started = sd.WipeID, sd.Tool, sd.BuildHash, sd.Plan, r.At()
 			st.LastRecord = r.At()
 			continue
 		}
