@@ -18,13 +18,13 @@ revision before relying on it.
 
 ## What Shunya does per media type
 
-| Media | Method now (M3) | Level claimed | Not reached by an overwrite | Planned Purge method |
+| Media | Methods (M5) | Level claimed | Not reached by an overwrite | Purge method |
 |---|---|---|---|---|
-| HDD (SATA/SAS) | Overwrite, 1 pass | Clear | Reallocated (grown-defect) sectors; HPA/DCO hidden areas until M5 | ATA Security Erase / Sanitize (M5) |
-| SATA SSD | Overwrite, 1 pass | Clear | Over-provisioned, retired and remapped flash blocks; HPA/DCO | ATA Sanitize Block / Crypto Erase (M5) |
+| HDD (SATA) | Overwrite, 1 pass (+ HPA); ATA Security Erase, normal or enhanced (+ HPA) | Overwrite: Clear. Security Erase: **Purge** (SP 800-88 Rev. 1 App. A, ATA hard disk drives) | Reallocated (grown-defect) sectors; DCO-hidden sectors (disclosed, never removed) | ATA Security Erase (M5); ATA SANITIZE not implemented yet |
+| SATA SSD | Overwrite (+ HPA); ATA Security Erase (+ HPA) | Clear for both: a Security Erase's effect on flash is vendor-defined and can't be checked from the host | Over-provisioned, retired and remapped flash blocks; DCO-hidden sectors | ATA SANITIZE block erase / crypto scramble: IDENTIFY reports support (word 59); the commands are not implemented yet |
 | NVMe SSD | Overwrite, 1 pass | Clear | Over-provisioned and remapped flash | NVMe Sanitize / Format NVM with crypto or user-data erase (M6) |
 | USB flash, SD card | Overwrite, 1 pass | Clear | Controller-managed spare blocks; bridges usually block firmware commands | None reachable through most USB bridges; Destroy for high-sensitivity data |
-| USB HDD/SSD (bridge) | Overwrite, 1 pass | Clear | As the underlying media | Through SAT pass-through where the bridge supports it (M5) |
+| USB HDD/SSD (bridge) | Overwrite, 1 pass | Clear | As the underlying media; HPA/DCO (ATA identity can't be tied to the selected device through a bridge, so ATA is not used) | None through bridges yet |
 | eMMC | Overwrite, 1 pass | Clear | Spare blocks | eMMC Secure Erase / Sanitize (stretch goal) |
 | Virtual disk | Overwrite, 1 pass | Clear (of the virtual disk) | Host-side copies, snapshots, thin provisioning | Sanitize on the host storage |
 | Image file | Overwrite, 1 pass | Clear (of the file's current contents) | Earlier copies kept by the host file system (copy-on-write, snapshots, its journal) | — |
@@ -80,3 +80,17 @@ verification can regenerate the stream.
 
 800-88 treats verification as part of sanitisation. A certificate without it will
 say so.
+
+## ATA Security Erase (Milestone 5)
+
+- **Normal mode** writes binary zeros to all user data (ACS-3 §7.45). `--verify` and
+  `--sample` check for zeros.
+- **Enhanced mode** writes a vendor pattern, or replaces the media key on self-encrypting
+  drives. There is nothing to compare, so verification is refused; the journal records the
+  security state before and after instead.
+- **Level:** Purge only for a real (not virtual) rotating disk whose IDENTIFY does not say
+  "non-rotating". Plan validation rejects a Purge claim for any other media.
+  Re-check this against the SP 800-88 revision in force before relying on it.
+- **Hidden areas first:** an HPA is removed (volatile) before the erase command, because
+  some drives erase only up to the current max. A DCO-hidden range is disclosed as possibly
+  not erased.

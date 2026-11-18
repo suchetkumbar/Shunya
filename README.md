@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 4 (verification and forensic canary harness).** `shunya wipe` overwrites a disk or image (NIST Clear) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
+> **Status: Milestone 5 (ATA layer).** `shunya wipe` overwrites a disk or image (NIST Clear) — including a SATA drive's Host Protected Area — or runs an ATA Security Erase (Purge on hard disks) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -53,6 +53,20 @@ rm -r $D
 - **Results are journalled:** every verification is a signed `verified` record, and `journal show` lists them.
 - **Canary harness:** `make lab-test` runs it in the lab VM. The report goes to `lab/results/latest/canary-report.{json,txt}`.
 - **Broken-wipe check:** `make test-broken` shows the harness catching a wipe that skips the last 1 %.
+
+### ATA drives: IDENTIFY, hidden areas, Security Erase (Milestone 5)
+```sh
+shunya ata identify --dump internal/ata/testdata/identify/intel-ssdsa2ct040g3.txt   # decode a saved dump (no device)
+shunya ata identify /dev/sdX --save sdX-identify.txt   # read-only; the file is hdparm --Istdout format
+shunya ata hidden /dev/sdX                             # HPA / DCO state (read-only commands only)
+shunya wipe /dev/sdX                                   # plan includes the hidden area; an HPA is wiped and restored
+shunya wipe --method ata-secure-erase /dev/sdX         # dry run: level, preconditions (frozen? password set?)
+shunya ata unlock --execute --journal J --key K        # recover a drive left locked by an interrupted erase
+```
+- **HPA:** removed with a volatile SET MAX (lost at power-off), wiped as part of the same plan, and restored afterwards (`--hpa restore`, the default). `--hpa leave-removed` keeps the full size until power-off; `--hpa skip` doesn't wipe it, and the plan says so.
+- **DCO:** detected and disclosed, never changed (that would be permanent).
+- **Security Erase:** a temporary password is set (journalled first), then ERASE UNIT runs and Shunya checks the password is gone. It counts as Purge on a real rotating disk and as Clear on flash. A normal erase can be verified for zeros; an enhanced one can't.
+- **Testing:** the lab's QEMU drives answer IDENTIFY but emulate no HPA, DCO or Security, so those are tested against a simulated drive built from real IDENTIFY dumps and stay *pending real hardware*.
 
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):

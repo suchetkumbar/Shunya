@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: Milestone 4 — verification and the forensic canary harness implemented. Updated at every milestone.
+> Status: Milestone 5 — ATA layer (IDENTIFY, HPA/DCO, Security Erase) implemented. Updated at every milestone.
 
 Shunya is a verifiable secure data-wiping tool (SIH25070). It picks the strongest
 NIST SP 800-88 method each medium supports, wipes it (including hidden areas), verifies
@@ -253,3 +253,81 @@ engine.Run
   3. Scan, plus photorec ("before").
   4. `shunya wipe --execute`, then `shunya verify`.
   5. Drop caches, scan, plus photorec ("after").
+
+## ATA layer: IDENTIFY, hidden areas, Security Erase (Milestone 5)
+
+```
+cmd/shunya (wipe --method, --hpa; ata identify|hidden|unlock)
+   │  ata.Device{T: Transport}            ata.SecureErase / ProbeHidden / SetMaxVolatile
+   ▼
+internal/ata   Command → ATA PASS-THROUGH(16) CDB ─────► Transport.PassThrough(cdb, data)
+   ▲              sense data ◄── ParseSense (descriptor 0x72 / fixed 0x70)        │
+   │                                                                              ▼
+   │                              backend.Block.PassThrough: CheckATA allowlist,
+   │                              --execute + TOCTOU re-check for mutating commands,
+   │                              SATA/USB transports only → SG_IO ioctl (Linux)
+   └── internal/ata/atafake: simulated drive answering the same CDB bytes (tests)
+```
+
+- **Commands are built, never typed.** `internal/ata/commands.go` has one constructor per
+  command Shunya uses: IDENTIFY, READ NATIVE MAX ADDRESS EXT, SET MAX ADDRESS EXT
+  (volatile only), DCO IDENTIFY, READ/WRITE DMA EXT (≤ 256 sectors), FLUSH CACHE EXT and
+  the user-password Security commands. CDBs follow SAT-4; IDENTIFY matches `sg_sat_identify`
+  byte for byte. Non-data commands set CK_COND so the registers come back.
+- **Defence in depth.** `backend.CheckATA` re-checks the raw CDB bytes and data buffer
+  against its own allowlist. It refuses DCO SET/RESTORE/FREEZE, a non-volatile SET MAX,
+  SECURITY FREEZE LOCK, master passwords, level Maximum, SANITIZE, DOWNLOAD MICROCODE and
+  everything vendor-specific. Read-only commands work on a dry-run target; mutating ones
+  need `--execute` and pass the same TOCTOU re-check as the first write.
+- **IDENTIFY parser** (`identify.go`): strings (two characters per word, high byte first),
+  28- and 48-bit capacity, validity signatures of words 83/84/86/87 (feature bits are
+  trusted only when valid), WWN, logical/physical sector size (word 106/117–118), HPA, DCO,
+  Security word 128 and erase times 89/90 (both formats), rotation rate, TRIM, Sanitize
+  bits, the word-255 checksum. Also reads and writes the `hdparm --Istdout` text form.
+  Tested on four public real-drive dumps against the hdparm output published with them
+  (`internal/ata/testdata/identify/SOURCES.md`), on QEMU's drives in the lab, and fuzzed.
+- **Hidden areas** (`hidden.go`): `ProbeHidden` compares IDENTIFY's size with READ NATIVE
+  MAX (HPA) and DCO IDENTIFY's factory size (DCO). `HiddenArea` goes into the plan and
+  into every `hidden-area` journal record.
+- **HPA wipe:** with `--hpa restore` (the default) or `leave-removed`:
+  1. A volatile SET MAX to the native size, always immediately after READ NATIVE MAX.
+  2. `ata.Span` joins the kernel's block device (unchanged size: no rescan is
+     triggered) with `ata.RangeTarget`, which reaches the hidden sectors through READ/WRITE
+     DMA EXT.
+  3. The engine wipes, checkpoints, resumes and verifies the whole native range as one
+     target.
+  4. The HPA policy runs after a completed wipe.
+
+  A failed restore is journalled (`hpa-restore-failed`) and returns by itself at power-off.
+  `--hpa skip` keeps the HPA and says "NOT wiped" in the plan.
+- **DCO:** detected only. Removing one is permanent, so the plan states the uncovered range.
+- **Security Erase** (`security.go`, `--method ata-secure-erase | ata-enhanced-secure-erase`):
+  1. Check preconditions: supported; not frozen (the refusal explains the suspend/resume
+     and hot-plug workarounds, which Shunya never applies itself); no foreign password;
+     attempt counter not expired; enhanced mode supported if asked.
+  2. Set a temporary random user password, level High.
+  3. ERASE PREPARE, then ERASE UNIT with a timeout of twice the drive's estimate plus 30 min.
+  4. IDENTIFY; DISABLE PASSWORD if the password is still set; check it is gone.
+
+  Each step is journalled before it runs, including the password, so `shunya ata unlock`
+  can recover a drive left locked. If an HPA exists it is removed first: some drives erase
+  only up to the current max.
+- **Resume never infers completion.** A drive without a password after ERASE UNIT was
+  sent may have been erased, or an operator may have disabled the password on an
+  interrupted erase. The resume therefore erases again: it costs time, but a false
+  "erased" would certify live data. A drive power-cycled mid-erase comes up locked; resume
+  unlocks it with the journalled password before touching the HPA (a locked drive aborts SET MAX).
+- **NIST level:** ATA Security Erase on a real rotating disk is Purge. On flash, a virtual
+  disk or behind a USB bridge it is Clear. A plan claiming Purge elsewhere fails validation.
+  A normal erase writes zeros and can be verified; an enhanced erase leaves a vendor
+  pattern, so `--verify` is refused for it.
+- **Identity:** IDENTIFY's serial, model (INQUIRY truncates it to 16 characters) and WWN
+  must match sysfs, and its size must match the kernel's (otherwise someone changed the
+  max address in this power cycle). Behind USB the ATA identity can't be tied to the
+  selected device, so ATA is not used there. Fingerprint v2 (`fp2:`) adds the native
+  capacity to v1's fields and is recorded in the plan.
+- **Simulated drive** (`internal/ata/atafake`): starts from a real IDENTIFY dump and
+  decodes the CDB bytes. It keeps HPA, DCO and Security state (SEC0–SEC6: enabled, locked,
+  frozen, attempt counter, power cycle) and sector contents. It can inject faults: no SAT,
+  fixed sense, frozen at boot, one SET MAX per power cycle, power loss before any command.
+  By default an erase covers only up to the current max, the worst case.

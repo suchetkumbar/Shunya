@@ -32,17 +32,27 @@ func checkVerifyFlags(f wipeFlags) error {
 	return nil
 }
 
-// verifyAndRecord runs the requested verifications of the last pass and appends each
-// result to the journal. Exit code 4 if any sector differs.
-func verifyAndRecord(ctx context.Context, tg backend.Target, plan engine.Plan, rec engine.JournalRecorder, f wipeFlags, stdout, stderr io.Writer) int {
+// verifyAndRecord runs the requested verifications against the plan's expected pattern
+// (the last overwrite pass, or zeros after a normal Security Erase) and appends each
+// result to the journal. scope is recorded when tg covers less than the plan. Exit code
+// 4 if any sector differs.
+func verifyAndRecord(ctx context.Context, tg backend.Target, plan engine.Plan, rec engine.JournalRecorder, f wipeFlags, scope string, stdout, stderr io.Writer) int {
 	if !f.verify && f.sample == 0 {
 		return 0
 	}
-	last := plan.Passes[len(plan.Passes)-1]
+	name, key := plan.ExpectedPattern()
+	if name == "" {
+		fmt.Fprintf(stderr, "shunya: verify: %s leaves a vendor-defined pattern; there is nothing to compare against\n", plan.Method)
+		return 2
+	}
+	last := engine.Pass{Pattern: name, Key: key}
 	pat, err := engine.NewPattern(last.Pattern, mustHex(last.Key))
 	if err != nil {
 		fmt.Fprintln(stderr, "shunya: verify:", err)
 		return 1
+	}
+	if scope != "" {
+		fmt.Fprintln(stdout, "note: "+scope)
 	}
 	code := 0
 	record := func(v engine.VerifiedData) bool {
@@ -63,7 +73,7 @@ func verifyAndRecord(ctx context.Context, tg backend.Target, plan engine.Plan, r
 			return 1
 		}
 		if !record(engine.VerifiedData{Mode: "full", Pattern: last.Pattern, OK: v.OK(), BytesRead: v.BytesRead,
-			BadSectors: v.BadSectors, FirstBad: v.FirstBad}) {
+			BadSectors: v.BadSectors, FirstBad: v.FirstBad, Scope: scope}) {
 			return code
 		}
 		if v.OK() {
@@ -81,7 +91,7 @@ func verifyAndRecord(ctx context.Context, tg backend.Target, plan engine.Plan, r
 		}
 		if !record(engine.VerifiedData{Mode: "sampled", Pattern: last.Pattern, OK: v.OK(), BytesRead: v.BytesRead,
 			BadSectors: v.BadSectors, FirstBad: v.FirstBad, Samples: v.Samples, SeedSource: v.SeedSource, Seed: v.Seed,
-			Bound95: v.Bound95}) {
+			Bound95: v.Bound95, Scope: scope}) {
 			return code
 		}
 		verdict := "VERIFIED (sampled)"
@@ -150,6 +160,10 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shunya: verify: %s is now %s, but the journal is for %s: refusing\n", spec.path, spec.id.Fingerprint, plan.Target.Fingerprint)
 		return 1
 	}
+	if name, _ := plan.ExpectedPattern(); name == "" {
+		fmt.Fprintf(stderr, "shunya: verify: %s leaves a vendor-defined pattern; there is nothing to compare against\n", plan.Method)
+		return 2
+	}
 	tg, code := spec.open(f, false, stderr) // read-only
 	if code != 0 {
 		return code
@@ -157,6 +171,39 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	defer tg.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	work, scope, err := verifyTarget(ctx, tg, plan)
+	if err != nil {
+		fmt.Fprintln(stderr, "shunya: verify:", err)
+		return 1
+	}
 	fmt.Fprintf(stdout, "verifying wipe %s of %s (read-only)\n", st.WipeID, spec.path)
-	return verifyAndRecord(ctx, tg, plan, engine.JournalRecorder{W: w}, f, stdout, stderr)
+	return verifyAndRecord(ctx, work, plan, engine.JournalRecorder{W: w}, f, scope, stdout, stderr)
+}
+
+// verifyTarget is the target a later verification reads. With a wiped HPA: if the
+// drive still has it removed (policy leave-removed, no power cycle), the whole native
+// range through pass-through reads; if it is back, only the visible part, and the scope
+// says so. Verification never changes the drive's maximum address.
+func verifyTarget(ctx context.Context, tg backend.Target, plan engine.Plan) (backend.Target, string, error) {
+	if plan.Hidden == nil || !plan.Hidden.RemoveHPA {
+		return tg, "", nil
+	}
+	dev, ok := ataDevice(tg)
+	if !ok {
+		return nil, "", errors.New("the plan includes a hidden range but this target has no ATA pass-through")
+	}
+	id, _, err := dev.Identify(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	h := plan.Hidden.Before
+	switch id.Sectors() {
+	case h.NativeSectors:
+		s, err := hiddenSpan(ctx, tg, dev, plan)
+		return s, "", err
+	case h.ReportedSectors:
+		return tg, // the block device is exactly the visible range
+			fmt.Sprintf("visible range only: the HPA is back in place, so its %d sectors (verified, if requested, during the wipe) are not re-read", h.HPASectors()), nil
+	}
+	return nil, "", fmt.Errorf("drive reports %d sectors; the plan expects %d or %d", id.Sectors(), h.ReportedSectors, h.NativeSectors)
 }

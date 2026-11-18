@@ -5,6 +5,7 @@
 //	shunya wipe ...                  overwrite wipe, dry run unless --execute (Milestone 3)
 //	shunya journal show ...          verify and print a progress journal
 //	shunya keys gen-dev FILE         temporary station signing key
+//	shunya ata identify|hidden|unlock  ATA IDENTIFY, hidden areas, Security Erase recovery (Milestone 5)
 //
 // list and guard never open a device node or write anything; wipe writes only with
 // --execute, after every guard in internal/backend.
@@ -30,12 +31,15 @@ commands:
   list [--json] [--all]   list block devices, their media type and protection status
   guard [--json] DEVICE   show whether the safety guards would allow DEVICE as a wipe
                           target, and why (never opens the device)
-  wipe [flags] DEVICE     overwrite DEVICE (NIST SP 800-88 Clear). Without --execute it
+  wipe [flags] DEVICE     overwrite DEVICE (Clear) or --method ata-secure-erase. Without --execute it
   wipe [flags] --image F  prints the plan and writes nothing. See shunya wipe -h.
   wipe --resume ...       continue an interrupted wipe from its journal
   verify --journal J ...  re-verify a finished wipe (full, or --sample N --seed HEX)
   journal show JOURNAL    verify a progress journal and show its history
   keys gen-dev FILE       create a temporary station signing key (until Milestone 7)
+  ata identify DEVICE     decode the drive's ATA IDENTIFY data (read-only; --dump FILE parses a saved dump)
+  ata hidden DEVICE       report HPA/DCO hidden areas (read-only)
+  ata unlock ...          remove the temporary password of an interrupted Security Erase
 `
 
 func main() {
@@ -60,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdJournal(args[1:], stdout, stderr)
 	case "keys":
 		return cmdKeys(args[1:], stdout, stderr)
+	case "ata":
+		return cmdATA(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

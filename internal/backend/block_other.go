@@ -3,8 +3,10 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"runtime"
+	"time"
 )
 
 // Block is not implemented on this OS yet (Windows: Milestone 10).
@@ -13,6 +15,11 @@ type Block struct{ File }
 // OpenBlock is unsupported off Linux.
 func OpenBlock(Env, string, Options) (*Block, error) {
 	return nil, errors.New("block devices are not supported on " + runtime.GOOS + " yet")
+}
+
+// PassThrough is unsupported off Linux (Windows: Milestone 10).
+func (b *Block) PassThrough(context.Context, [16]byte, []byte, time.Duration) ([]byte, error) {
+	return nil, errors.New("ATA pass-through is not supported on " + runtime.GOOS + " yet")
 }
 
 // LiveEnv is unsupported off Linux.

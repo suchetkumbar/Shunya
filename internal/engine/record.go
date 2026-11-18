@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"shunya/internal/ata"
 	"shunya/internal/journal"
 )
 
@@ -20,7 +21,28 @@ const (
 	RecResumed     = "resumed"
 	RecDone        = "done"
 	RecVerified    = "verified" // only after done; may repeat
+	// RecHidden records a change of hidden-area state (HPA removed, restored, …); it may
+	// follow done, because the HPA is restored after the final verification.
+	RecHidden = "hidden-area"
+	// RecSecurity is one ATA Security Erase step, written before the step runs.
+	RecSecurity = "security"
 )
+
+// Hidden-area events.
+const (
+	HiddenRemoved       = "hpa-removed"         // volatile SET MAX to the native size
+	HiddenRestored      = "hpa-restored"        // volatile SET MAX back to the original size
+	HiddenLeftRemoved   = "hpa-left-removed"    // policy leave-removed: nothing done
+	HiddenRestoreFailed = "hpa-restore-failed"  // the drive refused; the HPA returns at power-off
+	HiddenAlreadyGone   = "hpa-already-removed" // resume: still removed from the earlier run
+)
+
+// HiddenEvent is a RecHidden record.
+type HiddenEvent struct {
+	Event string         `json:"event"`
+	State ata.HiddenArea `json:"state"` // after the event, re-read from the drive
+	Note  string         `json:"note,omitempty"`
+}
 
 // StartData is the first record: the wipe's identity and full plan (with pattern keys,
 // so a resumed or verifying run regenerates exactly the same bytes).
@@ -124,11 +146,37 @@ type VerifiedData struct {
 	SeedSource string  `json:"seed_source,omitempty"`
 	Seed       string  `json:"seed,omitempty"`
 	Bound95    float64 `json:"bound95,omitempty"`
+	// Scope is empty when the whole planned range was covered; otherwise it says what
+	// was left out (e.g. the hidden range after the HPA was restored).
+	Scope string `json:"scope,omitempty"`
+}
+
+// ExpectedPattern is the pattern a read-back checks: VerifyPattern, or the last pass
+// for journals written before Milestone 5 (no verify_pattern field). "" means the
+// method's result can't be checked.
+func (p Plan) ExpectedPattern() (name, key string) {
+	if p.Method == MethodOverwrite && len(p.Passes) > 0 {
+		last := p.Passes[len(p.Passes)-1]
+		return last.Pattern, last.Key
+	}
+	return p.VerifyPattern, ""
 }
 
 // Verified records a verification result.
 func (j JournalRecorder) Verified(v VerifiedData) error {
 	_, err := j.W.Append(RecVerified, v)
+	return err
+}
+
+// Hidden records a hidden-area event.
+func (j JournalRecorder) Hidden(e HiddenEvent) error {
+	_, err := j.W.Append(RecHidden, e)
+	return err
+}
+
+// Security records an ATA Security Erase step (before it runs).
+func (j JournalRecorder) Security(s ata.Step) error {
+	_, err := j.W.Append(RecSecurity, s)
 	return err
 }
 
@@ -158,6 +206,11 @@ type State struct {
 	LastRecord    time.Time
 	Interruptions []Interruption
 	Verifications []VerifiedData
+	HiddenEvents  []HiddenEvent
+	// Security Erase: every step, the furthest one reached, and the temporary password.
+	SecuritySteps []ata.Step
+	SecurityStep  string
+	Password      string
 }
 
 // Replay rebuilds the wipe state from a verified journal and checks that the records
@@ -186,14 +239,18 @@ func Replay(log *journal.Log) (State, error) {
 			st.LastRecord = r.At()
 			continue
 		}
-		if st.Done && r.Type != RecVerified {
+		if st.Done && r.Type != RecVerified && r.Type != RecHidden {
 			return bad(i, "%q after done", r.Type)
 		}
-		if st.Stopped != "" && r.Type != RecResumed {
+		if st.Stopped != "" && r.Type != RecResumed && r.Type != RecHidden {
 			return bad(i, "%q after a stop without resume", r.Type)
 		}
+		erase := st.Plan.Method != MethodOverwrite
 		switch r.Type {
 		case RecCheckpoint, RecPassDone, RecResumed:
+			if erase && r.Type != RecResumed {
+				return bad(i, "%s in a %s journal", r.Type, st.Plan.Method)
+			}
 			var p posData
 			if err := r.Decode(&p); err != nil {
 				return bad(i, "%v", err)
@@ -255,9 +312,44 @@ func Replay(log *journal.Log) (State, error) {
 				return bad(i, "%v", err)
 			}
 			st.Verifications = append(st.Verifications, v)
+		case RecHidden:
+			var e HiddenEvent
+			if err := r.Decode(&e); err != nil {
+				return bad(i, "%v", err)
+			}
+			if st.Plan.Hidden == nil || !st.Plan.Hidden.RemoveHPA {
+				return bad(i, "hidden-area event %q in a plan without HPA removal", e.Event)
+			}
+			st.HiddenEvents = append(st.HiddenEvents, e)
+		case RecSecurity:
+			if !erase {
+				return bad(i, "security step in an overwrite journal")
+			}
+			var s ata.Step
+			if err := r.Decode(&s); err != nil {
+				return bad(i, "%v", err)
+			}
+			if _, ok := ata.StepOrder[s.Step]; !ok {
+				return bad(i, "unknown security step %q", s.Step)
+			}
+			if s.Step == ata.StepSetPassword {
+				if s.Password == "" {
+					return bad(i, "set-password without the password")
+				}
+				st.Password = s.Password
+			} else if st.Password == "" {
+				return bad(i, "security step %q before set-password", s.Step)
+			}
+			if ata.StepOrder[s.Step] > ata.StepOrder[st.SecurityStep] {
+				st.SecurityStep = s.Step
+			}
+			st.SecuritySteps = append(st.SecuritySteps, s)
 		case RecDone:
 			if st.Pass != len(st.Plan.Passes) {
 				return bad(i, "done after %d of %d passes", st.Pass, len(st.Plan.Passes))
+			}
+			if erase && st.SecurityStep != ata.StepChecked {
+				return bad(i, "done before the security state was checked (last step %q)", st.SecurityStep)
 			}
 			st.Done, st.Finished = true, r.At()
 		default:

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -100,4 +101,20 @@ func FuzzFingerprint(f *testing.F) {
 			t.Fatalf("unstable or bad length: %v %v", a, b)
 		}
 	})
+}
+
+func TestFingerprintV2(t *testing.T) {
+	in := FingerprintInput{Model: "SAMSUNG HD321KJ", Serial: "S0ZEJ1NP601353", Firmware: "CP100-11", CapacityBytes: 1 << 30}
+	v1 := ComputeFingerprint(in)
+	a := ComputeFingerprintV2(in, 1<<30+64*512)
+	b := ComputeFingerprintV2(in, 1<<30+65*512)
+	if a.Version != 2 || !strings.HasPrefix(a.Value, "fp2:") || a.CapacitySource != "ata-native-max" || len(a.Value) != 4+64 {
+		t.Fatalf("%+v", a)
+	}
+	if a.Value == b.Value || a.Value[4:] == v1.Value[4:] {
+		t.Fatal("v2 must bind the native capacity and differ from v1")
+	}
+	if ComputeFingerprintV2(in, 1<<30+64*512) != a {
+		t.Fatal("not deterministic")
+	}
 }

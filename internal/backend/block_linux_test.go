@@ -2,12 +2,14 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -23,6 +25,7 @@ type fakeOps struct {
 	info   probeInfo
 	forbid bool // fail the test if open is reached
 	disc   [][2]uint64
+	cdbs   [][16]byte // SG_IO calls that reached the "ioctl"
 }
 
 func (f *fakeOps) ops() blockOps {
@@ -42,6 +45,10 @@ func (f *fakeOps) ops() blockOps {
 		},
 		probe:   func(*os.File) (probeInfo, error) { return f.info, nil },
 		discard: func(_ *os.File, off, n uint64) error { f.disc = append(f.disc, [2]uint64{off, n}); return nil },
+		sgio: func(_ *os.File, cdb [16]byte, _ int, _ []byte, _ time.Duration) ([]byte, error) {
+			f.cdbs = append(f.cdbs, cdb)
+			return nil, nil
+		},
 	}
 }
 
@@ -240,5 +247,58 @@ func TestBlockReleaseNeedsConfirmation(t *testing.T) {
 		if _, err := openBlock(env, "/dev/sdb", Options{Execute: true, Confirm: c}, fo.ops()); !errors.Is(err, ErrRefused) {
 			t.Fatalf("confirmation %+v: err %v", c, err)
 		}
+	}
+}
+
+// ATA pass-through goes through the same guards as writes: read-only commands work on a
+// dry-run target, commands that change the drive need Execute and the TOCTOU re-check,
+// and anything off the allowlist never reaches the ioctl.
+func TestBlockPassThrough(t *testing.T) {
+	identify := [16]byte{0x85, 0x08, 0x0e, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xec, 0}
+	erasePrep := [16]byte{0x85, 0x06, 0x20, 14: 0xf3}
+	ctx := context.Background()
+
+	b, fo, m := openSDB(t, Options{})
+	if _, err := b.PassThrough(ctx, identify, make([]byte, 512), time.Second); err != nil {
+		t.Fatalf("IDENTIFY on a dry-run target: %v", err)
+	}
+	if _, err := b.PassThrough(ctx, erasePrep, nil, time.Second); !errors.Is(err, ErrDryRun) {
+		t.Fatalf("ERASE PREPARE on a dry-run target: %v", err)
+	}
+	if _, err := b.PassThrough(ctx, [16]byte{0x85, 0x06, 0x20, 14: 0xf5}, nil, time.Second); !errors.Is(err, ErrATARefused) {
+		t.Fatalf("FREEZE LOCK: %v", err)
+	}
+	if len(fo.cdbs) != 1 {
+		t.Fatalf("%d CDBs reached the ioctl, want 1", len(fo.cdbs))
+	}
+	_ = m
+
+	// With Execute, the first mutating command re-checks identity.
+	b, fo, m = openSDB(t, Options{Execute: true})
+	m[sdbDir+"/vpd_pg80"].Data = append([]byte{0, 0x80, 0, 9}, "OTHERDISK"...)
+	if _, err := b.PassThrough(ctx, erasePrep, nil, time.Second); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("after a swap: %v", err)
+	}
+	if _, err := b.PassThrough(ctx, identify, make([]byte, 512), time.Second); err == nil {
+		t.Fatal("dead target still passes commands through")
+	}
+	if len(fo.cdbs) != 0 {
+		t.Fatal("a CDB reached the ioctl after the re-check failed")
+	}
+
+	// Only ATA transports.
+	b, fo, _ = openSDB(t, Options{Execute: true})
+	b.selected.Transport = "nvme"
+	if _, err := b.PassThrough(ctx, identify, make([]byte, 512), time.Second); !errors.Is(err, ErrATARefused) {
+		t.Fatalf("nvme: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	b.selected.Transport = "sata"
+	if _, err := b.PassThrough(cancelled, identify, make([]byte, 512), time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled: %v", err)
+	}
+	if len(fo.cdbs) != 0 {
+		t.Fatal("refused CDB reached the ioctl")
 	}
 }

@@ -152,11 +152,12 @@ func TestLabWipeRefusals(t *testing.T) {
 	}
 }
 
-// Dry run prints the plan with the honest disclosures and does not open the device.
+// Dry run prints the plan with the honest disclosures. A SATA drive is opened read-only
+// for IDENTIFY (Milestone 5); nothing is written.
 func TestLabWipeDryRun(t *testing.T) {
 	env := inLab(t)
 	out := shunya(t, 0, "wipe", pathOf(t, env, "SHUNYA-SATA-SSD-01"))
-	for _, want := range []string{"NIST level:  Clear", "Flash media", "HPA/DCO", "DRY RUN"} {
+	for _, want := range []string{"NIST level:  Clear", "Flash media", "hidden areas: HPA not supported", "DCO", "DRY RUN", "opened read-only for ATA IDENTIFY"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dry run lacks %q:\n%s", want, out)
 		}

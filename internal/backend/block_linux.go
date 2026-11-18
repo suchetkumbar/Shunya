@@ -1,10 +1,12 @@
 package backend
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -27,9 +29,10 @@ type blockOps struct {
 	open    func(path string, flags int) (*os.File, error)
 	probe   func(f *os.File) (probeInfo, error)
 	discard func(f *os.File, off, length uint64) error
+	sgio    func(f *os.File, cdb [16]byte, dir int, data []byte, timeout time.Duration) ([]byte, error)
 }
 
-var liveOps = blockOps{open: sysOpen, probe: sysProbe, discard: sysDiscard}
+var liveOps = blockOps{open: sysOpen, probe: sysProbe, discard: sysDiscard, sgio: sysSGIO}
 
 // Block is the BlockBackend: a whole block device opened exclusively.
 type Block struct {
@@ -314,4 +317,33 @@ func sysDiscard(f *os.File, off, length uint64) error {
 		return fmt.Errorf("BLKDISCARD: %w", errno)
 	}
 	return nil
+}
+
+// PassThrough sends one ATA PASS-THROUGH(16) CDB with SG_IO (it implements
+// ata.Transport). Every CDB is checked against the allowlist (CheckATA); commands
+// that change the drive need Options.Execute and run the same TOCTOU re-check as the
+// first write. Only SATA drives (and SATA drives behind USB bridges, which may refuse)
+// are addressed. The ioctl cannot be cancelled once issued: ctx is checked before it.
+func (b *Block) PassThrough(ctx context.Context, cdb [16]byte, data []byte, timeout time.Duration) ([]byte, error) {
+	c, err := CheckATA(cdb, data)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.dead != nil {
+		return nil, b.dead
+	}
+	if !ATATransports[b.selected.Transport] {
+		return nil, fmt.Errorf("%w: %s is a %s device, not ATA", ErrATARefused, b.path, b.selected.Transport)
+	}
+	if c.Mutating {
+		if err := b.beforeWrite(); err != nil {
+			return nil, err
+		}
+	}
+	return b.ops.sgio(b.f, cdb, c.dir, data, timeout)
 }

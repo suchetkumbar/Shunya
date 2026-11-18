@@ -17,12 +17,20 @@ type Level string
 
 const (
 	LevelClear Level = "clear"
-	// LevelPurge is produced only by firmware sanitize commands (Milestones 5–6).
+	// LevelPurge is produced only by firmware erase commands, and only where SP 800-88
+	// accepts them for the media (see methodLevel).
 	LevelPurge Level = "purge"
 )
 
 // MediaImage marks a regular image file target (FileBackend).
 const MediaImage device.MediaType = "image-file"
+
+// Methods.
+const (
+	MethodOverwrite        = "overwrite"
+	MethodATAErase         = "ata-secure-erase"
+	MethodATAEnhancedErase = "ata-enhanced-secure-erase"
+)
 
 // Limits on plan parameters.
 const (
@@ -70,7 +78,12 @@ type Plan struct {
 	ChunkBytes      int              `json:"chunk_bytes"`
 	SyncEveryBytes  int64            `json:"sync_every_bytes"`
 	EstimateSeconds float64          `json:"estimate_seconds"`
-	Notes           []string         `json:"notes"`
+	// VerifyPattern is what a read-back must find after the method: the last pass for an
+	// overwrite, "zero" after a normal Security Erase (ACS: binary zeros), "" when the
+	// result is vendor-defined (enhanced erase) and cannot be checked.
+	VerifyPattern string      `json:"verify_pattern,omitempty"`
+	Hidden        *HiddenPlan `json:"hidden,omitempty"`
+	Notes         []string    `json:"notes"`
 }
 
 // PlanInput describes the target and what the operator asked for.
@@ -83,6 +96,9 @@ type PlanInput struct {
 	Patterns   []string // default: one random pass
 	ChunkBytes int      // default DefaultChunk
 	SyncEvery  int64    // default DefaultSyncEvery
+	// Hidden is the hidden-area state and handling (block devices). With
+	// Hidden.RemoveHPA, SizeBytes must be the native size: the HPA is part of the wipe.
+	Hidden *HiddenPlan
 }
 
 // NewPlan validates the input and builds an overwrite plan (without pattern keys).
@@ -98,9 +114,9 @@ func NewPlan(in PlanInput) (Plan, error) {
 	}
 	p := Plan{
 		Version: 1, Target: in.Target, Media: in.Media, Virtual: in.Virtual,
-		Method: "overwrite", Level: LevelClear,
+		Method: MethodOverwrite, Level: LevelClear,
 		SizeBytes: in.SizeBytes, SectorSize: in.SectorSize,
-		ChunkBytes: in.ChunkBytes, SyncEveryBytes: in.SyncEvery,
+		ChunkBytes: in.ChunkBytes, SyncEveryBytes: in.SyncEvery, Hidden: in.Hidden,
 	}
 	for _, name := range in.Patterns {
 		p.Passes = append(p.Passes, Pass{Pattern: name})
@@ -109,6 +125,7 @@ func NewPlan(in PlanInput) (Plan, error) {
 		return Plan{}, err
 	}
 	p.EstimateSeconds = float64(p.SizeBytes) * float64(len(p.Passes)) / assumedRate(p.Media)
+	p.VerifyPattern = p.Passes[len(p.Passes)-1].Pattern
 	p.Notes = notes(p)
 	return p, nil
 }
@@ -141,8 +158,39 @@ func (p Plan) validate(needKeys bool) error {
 	if p.Version != 1 {
 		bad("unsupported plan version %d", p.Version)
 	}
-	if p.Method != "overwrite" || p.Level != LevelClear {
-		bad("an overwrite plan must be method overwrite, level clear (got %q, %q)", p.Method, p.Level)
+	switch p.Method {
+	case MethodOverwrite:
+		if p.Level != LevelClear {
+			bad("an overwrite is only ever Clear (got %q)", p.Level)
+		}
+		if len(p.Passes) == 0 || len(p.Passes) > MaxPasses {
+			bad("need 1 to %d passes, got %d", MaxPasses, len(p.Passes))
+		}
+		if len(p.Passes) > 0 && p.VerifyPattern != "" && p.VerifyPattern != p.Passes[len(p.Passes)-1].Pattern {
+			bad("verify pattern %q is not the last pass", p.VerifyPattern)
+		}
+	case MethodATAErase, MethodATAEnhancedErase:
+		if len(p.Passes) != 0 {
+			bad("%s takes no overwrite passes", p.Method)
+		}
+		if want := methodLevel(p.Method, p.Media, p.Virtual, p.Hidden); p.Level != want {
+			bad("%s on %s media is %s, not %s", p.Method, p.Media, want, p.Level)
+		}
+		wantVP := PatternZero
+		if p.Method == MethodATAEnhancedErase {
+			wantVP = ""
+		}
+		if p.VerifyPattern != wantVP {
+			bad("%s: verify pattern %q, want %q", p.Method, p.VerifyPattern, wantVP)
+		}
+		if p.Hidden == nil || !p.Hidden.Before.Checked {
+			bad("%s needs the hidden-area state from IDENTIFY", p.Method)
+		}
+	default:
+		bad("unknown method %q", p.Method)
+	}
+	if err := p.Hidden.validate(p.SizeBytes, p.SectorSize); err != nil {
+		bad("hidden areas: %v", err)
 	}
 	if p.SectorSize < 512 || p.SectorSize&(p.SectorSize-1) != 0 {
 		bad("bad sector size %d", p.SectorSize)
@@ -156,9 +204,6 @@ func (p Plan) validate(needKeys bool) error {
 	}
 	if p.SyncEveryBytes <= 0 {
 		bad("sync interval must be positive")
-	}
-	if len(p.Passes) == 0 || len(p.Passes) > MaxPasses {
-		bad("need 1 to %d passes, got %d", MaxPasses, len(p.Passes))
 	}
 	if p.Target.Fingerprint == "" {
 		bad("target has no fingerprint")
@@ -222,12 +267,86 @@ func notes(p Plan) []string {
 	if p.Virtual {
 		n = append(n, "Virtual disk: the overwrite reaches the disk as the hypervisor presents it; host-side copies, snapshots and thin-provisioning are out of reach.")
 	}
-	if p.Media != MediaImage {
-		n = append(n, "Hidden areas (HPA/DCO) are not detected yet (Milestone 5): data behind a host protected area would not be overwritten.")
-	}
+	n = append(n, p.Hidden.notes(p.Media)...)
 	if len(p.Passes) > 1 {
 		n = append(n, fmt.Sprintf("%d passes requested. NIST SP 800-88 Rev. 1 treats a single overwrite pass as sufficient for Clear on modern media; extra passes add time, not assurance (see design/NIST_MAPPING.md).", len(p.Passes)))
 	}
 	n = append(n, "Estimated time is a rough figure from the media type ("+time.Duration(p.EstimateSeconds*float64(time.Second)).Round(time.Second).String()+").")
+	return n
+}
+
+// EraseInput describes an ATA Security Erase request.
+type EraseInput struct {
+	Target     backend.Identity
+	Media      device.MediaType
+	Virtual    bool
+	SizeBytes  int64 // what the erase covers: the native size when the HPA is removed first
+	SectorSize int
+	Enhanced   bool
+	Hidden     *HiddenPlan // required: IDENTIFY state (Security, SolidState, hidden areas)
+	ChunkBytes int         // for the read-back of a normal erase; default DefaultChunk
+}
+
+// NewErasePlan builds an ATA Security Erase plan. Whether the drive is in a state that
+// allows it (supported, not frozen, …) is checked by ata.CheckErase when it runs; the
+// plan records the state found at planning.
+func NewErasePlan(in EraseInput) (Plan, error) {
+	if in.ChunkBytes == 0 {
+		in.ChunkBytes = DefaultChunk
+	}
+	p := Plan{Version: 1, Target: in.Target, Media: in.Media, Virtual: in.Virtual, Method: MethodATAErase,
+		SizeBytes: in.SizeBytes, SectorSize: in.SectorSize, ChunkBytes: in.ChunkBytes, SyncEveryBytes: DefaultSyncEvery,
+		Hidden: in.Hidden, VerifyPattern: PatternZero}
+	if in.Enhanced {
+		p.Method, p.VerifyPattern = MethodATAEnhancedErase, ""
+	}
+	p.Level = methodLevel(p.Method, p.Media, p.Virtual, p.Hidden)
+	if err := p.validate(false); err != nil {
+		return Plan{}, err
+	}
+	if s := in.Hidden.Security; s != nil {
+		m := s.NormalEraseMinutes
+		if in.Enhanced {
+			m = s.EnhancedEraseMinutes
+		}
+		if m > 0 {
+			p.EstimateSeconds = float64(m * 60)
+		}
+	}
+	if p.EstimateSeconds == 0 {
+		p.EstimateSeconds = float64(p.SizeBytes) / assumedRate(p.Media)
+	}
+	p.Notes = eraseNotes(p)
+	return p, nil
+}
+
+func eraseNotes(p Plan) []string {
+	mode := "normal"
+	if p.Method == MethodATAEnhancedErase {
+		mode = "enhanced"
+	}
+	var n []string
+	switch {
+	case p.Level == LevelPurge:
+		n = append(n, "NIST SP 800-88 Rev. 1 level: Purge. ATA SECURITY ERASE UNIT on a magnetic disk is a Purge method (Appendix A, ATA hard disk drives): the drive's firmware erases every user data sector, including ones the host can no longer address.")
+	case p.Virtual:
+		n = append(n, "NIST SP 800-88 Rev. 1 level: Clear. The drive is virtual: the erase command reaches the hypervisor's emulation, not a physical medium, so nothing beyond Clear of the virtual disk can be claimed.")
+	default:
+		n = append(n, "NIST SP 800-88 Rev. 1 level: Clear. On flash media the effect of ATA Security Erase is vendor-defined (whether spare and retired blocks are erased, or a media key is replaced) and cannot be checked from the host; SP 800-88 relies on ATA SANITIZE (block erase, crypto scramble) or a verified cryptographic erase for SSD Purge, which Shunya does not implement yet.")
+	}
+	if mode == "normal" {
+		n = append(n, "Normal erase: the drive writes binary zeros to all user data (ACS-3 §7.45); Shunya can read the result back and check for zeros (--verify, --sample).")
+	} else {
+		n = append(n, "Enhanced erase: the drive writes a vendor-specific pattern (or changes its encryption key). The content cannot be checked against an expected pattern; Shunya records the drive's security state before and after instead, and --verify is refused.")
+	}
+	n = append(n, "The erase sets a temporary random user password first (journaled before it is sent, so a drive left locked by a crash can be unlocked with `shunya ata unlock`); a successful erase clears it, and Shunya checks that it is gone.")
+	if p.Virtual {
+		n = append(n, "Virtual disk: host-side copies, snapshots and thin provisioning are out of reach.")
+	}
+	n = append(n, p.Hidden.notes(p.Media)...)
+	if p.Hidden != nil && p.Hidden.RemoveHPA {
+		n = append(n, "Some drives erase only up to the current maximum address, so the HPA is removed before the erase command is sent.")
+	}
+	n = append(n, "Estimated time is the drive's own IDENTIFY estimate where it gives one ("+time.Duration(p.EstimateSeconds*float64(time.Second)).Round(time.Second).String()+").")
 	return n
 }

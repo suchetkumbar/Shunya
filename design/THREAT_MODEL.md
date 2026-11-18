@@ -32,6 +32,13 @@
 | T17 | Random-pattern key exposure | The AES key only seeds the overwrite pattern; it protects nothing and is kept in the journal so resume and verification can regenerate the stream | accepted (by design) |
 | T18 | Incomplete wipe (bug, skipped range) reported as complete | M4: full verify fails (exit 4) and is journalled; the lab canary harness proves the detection end to end with a deliberately broken build (`brokenwipe` tag, skips the last 1 %) — residue found only in the tail. The broken code exists only under that tag (constant 0 elsewhere) | mitigated (M4) |
 | T19 | A "wiped" test that couldn't have failed (vacuous harness) | M4: each case first proves recovery works: canaries found, every marker on disk, photorec recovers every planted file intact (incl. deleted copies); otherwise the case FAILS as vacuous | mitigated (M4) |
+| T20 | Data left in a Host Protected Area | M5: HPA detected (READ NATIVE MAX vs IDENTIFY), removed with a volatile SET MAX and wiped through ATA pass-through as part of the same plan, verification included; restored afterwards by default. `--hpa skip` is disclosed as "NOT wiped". Proven against the simulated drive only (QEMU has no HPA) | mitigated (M5, pending-real-hardware) |
+| T21 | Data hidden by a DCO | M5: detected (DCO IDENTIFY) and disclosed with the uncovered range; never removed, because DCO changes are permanent. A DCO frozen by the BIOS is reported as "state unknown" | accepted, disclosed (M5) |
+| T22 | Tool damages a drive permanently (DCO restore, permanent SET MAX, master password, firmware) | M5: those commands cannot be built in `internal/ata` and are refused again by `backend.CheckATA` on the raw CDB; tested for each | mitigated (M5) |
+| T23 | Drive left locked by an interrupted Security Erase | M5: the password is journalled before SET PASSWORD; `shunya ata unlock` and `wipe --resume` use it; level High keeps the master password usable. The password is printable so hdparm can also be used | mitigated (M5) |
+| T24 | An interrupted erase certified as complete | M5: resume never infers completion from the security state (a disabled password could be an operator's doing); it erases again. Normal erase can be read back for zeros | mitigated (M5) |
+| T25 | Temporary password in the journal | It only unlocks this drive until the erase finishes, after which it is invalid; it is in the journal on purpose (T23). Protect the journal as you would the drive | accepted (by design) |
+| T26 | ATA commands reach a different drive than the one selected (USB bridge, wrong path) | M5: IDENTIFY serial/model/WWN and size must match sysfs; behind USB, where they cannot be tied together, ATA is not used | mitigated (M5) |
 
 ## Out of scope
 - Physical destruction (NIST "Destroy").
@@ -46,3 +53,7 @@
 - **M3: what the journal proves.** It shows what this station's key holder recorded,
   in order, with no edits. It does not prove the writes happened; read-back
   verification (`--verify` now, sampled with an unpredictable seed from M8) does that.
+- **M5: what a firmware erase proves.** A Security Erase is the drive's own claim. Shunya
+  checks what it can: the security state before and after, and zeros after a normal erase.
+  It cannot check a vendor pattern, spare-area coverage or a key change. That is why flash
+  stays at Clear, and why everything ATA-specific beyond IDENTIFY is pending real hardware.

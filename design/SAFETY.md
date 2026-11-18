@@ -63,6 +63,14 @@ machine Shunya runs on. They override every other requirement.
 16. **The canary harness runs only in the lab VM** (`lab/tests`, `-tags labtest`, root). It plants through the guarded `BlockBackend` and shells out to `mkfs.*`, `mount` and `photorec`, which the brief allows in lab harnesses only. Its host tests use image files.
 17. **VM-only packages.** `testdisk` (photorec) and `exfatprogs` are installed inside the lab VM by `lab.sh`, never on the host. `foremost` is not packaged for Alpine 3.24, so photorec is the only carver.
 
+### Milestone 5 additions (`internal/ata`, `backend.CheckATA`)
+18. **ATA allowlist on the raw bytes.** `Block.PassThrough` accepts only ATA PASS-THROUGH(16) CDBs whose command, protocol, direction, transfer length and data buffer match `backend.CheckATA`. Never allowed: DCO SET/RESTORE/FREEZE LOCK, a non-volatile SET MAX, SECURITY FREEZE LOCK, a master password or security level Maximum, SANITIZE, DOWNLOAD MICROCODE, any vendor command. Nothing Shunya sends can change a drive permanently outside its user data and its own temporary password.
+19. **Mutating ATA commands are writes.** SET MAX, WRITE DMA EXT and the Security commands need `--execute` and run the same TOCTOU re-check as the first write; a dry run may only read (IDENTIFY, READ NATIVE MAX, DCO IDENTIFY, READ DMA EXT). ATA is sent only to SATA and USB-attached drives, and only after IDENTIFY's serial, model, WWN and size match what was selected.
+20. **HPA changes are volatile.** The only SET MAX Shunya sends clears the Value Volatile bit, so a drive always returns to its original size at power-off, whatever happens to Shunya.
+21. **Security Erase recovery.** The temporary password is journalled before it is set. `shunya ata unlock` removes it from a drive left locked; the password is level High, so the drive's master password also still works.
+22. **Frozen drives are refused, not worked around.** The suspend-to-RAM and hot-plug workarounds act on the whole machine; Shunya explains them and leaves them to the operator.
+23. **Simulated drive only for HPA/DCO/Security.** QEMU emulates none of them; everything proven only against `atafake` is labelled pending-real-hardware (design/LAB_CAPABILITIES.md). No real drive was sent a Security or SET MAX command during development.
+
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is
 treated as outside its intent. `/dev/urandom` is no longer read: the lab token comes
