@@ -53,6 +53,9 @@ type fakeSetup struct {
 
 func withDrive(t *testing.T, s fakeSetup) *atafake.Drive {
 	t.Helper()
+	old := sanitizePoll
+	sanitizePoll = time.Millisecond
+	t.Cleanup(func() { sanitizePoll = old })
 	dump, err := os.ReadFile(filepath.Join("..", "..", "internal", "ata", "testdata", "identify", "samsung-hd321kj.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -307,8 +310,13 @@ func TestWipeEnhancedEraseSSD(t *testing.T) {
 	if !bytes.Equal(d.Sector(4100), bytes.Repeat([]byte{0x6b}, 512)) {
 		t.Fatal("hidden range not erased")
 	}
-	if code, _, _ := runCLI(t, "verify", "--journal", f.journal, "--key", f.key); code != 2 {
-		t.Fatal("verify of an enhanced erase accepted")
+	// Nothing to compare after an enhanced erase: a pattern check is refused, the marker
+	// check (planted before the erase) still runs.
+	if code, _, _ := runCLI(t, "verify", "--full", "--journal", f.journal, "--key", f.key); code != 2 {
+		t.Fatal("pattern verify of an enhanced erase accepted")
+	}
+	if code, out, _ := runCLI(t, "verify", "--journal", f.journal, "--key", f.key); code != 0 || !strings.Contains(out, "VERIFIED (markers)") {
+		t.Fatalf("marker verify: %d %s", code, out)
 	}
 }
 

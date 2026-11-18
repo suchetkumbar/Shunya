@@ -10,11 +10,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
-	"shunya/internal/ata"
 	"shunya/internal/backend"
 	"shunya/internal/device"
 	"shunya/internal/engine"
@@ -22,7 +22,7 @@ import (
 )
 
 // version is reported in journals (and, from Milestone 7, certificates).
-var version = "0.5.0-dev"
+var version = "0.6.0-dev"
 
 // wrapTarget lets tests slow down or observe the target; identity in production.
 var wrapTarget = func(t backend.Target) backend.Target { return t }
@@ -62,15 +62,13 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 	fl.StringVar(&f.confirm, "confirm", "", "release builds: last 4 characters of the device serial")
 	fl.BoolVar(&f.yesReally, "yes-really", false, "release builds, fleet mode: skip typing, device must be in --approved")
 	fl.StringVar(&f.approved, "approved", "", "fleet mode: file of approved device fingerprints")
-	fl.StringVar(&f.method, "method", engine.MethodOverwrite, "overwrite, ata-secure-erase or ata-enhanced-secure-erase")
+	fl.StringVar(&f.method, "method", engine.MethodOverwrite, "erase method (see shunya plan DEVICE): "+strings.Join(engine.Methods, ", "))
 	fl.StringVar(&f.hpa, "hpa", engine.HPARestore, "a Host Protected Area found on the drive: wipe it and restore it afterwards (restore), wipe it and leave it removed until power-off (leave-removed), or do not wipe it (skip; disclosed in the plan)")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
-	switch f.method {
-	case engine.MethodOverwrite, engine.MethodATAErase, engine.MethodATAEnhancedErase:
-	default:
-		fmt.Fprintf(stderr, "shunya: wipe: unknown --method %q\n", f.method)
+	if !slices.Contains(engine.Methods, f.method) {
+		fmt.Fprintf(stderr, "shunya: wipe: unknown --method %q (one of: %s)\n", f.method, strings.Join(engine.Methods, ", "))
 		return 2
 	}
 	if f.hpa != engine.HPARestore && f.hpa != engine.HPALeaveRemoved && f.hpa != "skip" {
@@ -252,9 +250,15 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 	if hp != nil && hp.RemoveHPA {
 		size = int64(hp.Before.NativeSectors) * int64(spec.sector)
 	}
+	nv, nvWhy, code := probeNVMe(spec, f, stderr)
+	if code != 0 {
+		return code
+	}
 	var plan engine.Plan
+	var refusal error
 	erase := f.method != engine.MethodOverwrite
-	if erase {
+	switch {
+	case engine.IsATA(f.method):
 		if id == nil || hp == nil || !hp.Before.Checked {
 			why := "it is an image file"
 			if hp != nil {
@@ -263,10 +267,23 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "shunya: wipe: --method %s needs an ATA drive that answers IDENTIFY; %s\n", f.method, why)
 			return 2
 		}
-		plan, err = engine.NewErasePlan(engine.EraseInput{Target: spec.id, Media: spec.media, Virtual: spec.virtual,
-			SizeBytes: size, SectorSize: spec.sector, Enhanced: f.method == engine.MethodATAEnhancedErase, Hidden: hp,
-			ChunkBytes: f.chunkMiB << 20})
-	} else {
+		plan, err = engine.NewFirmwarePlan(engine.FirmwareInput{Target: spec.id, Media: spec.media, Virtual: spec.virtual,
+			SizeBytes: size, SectorSize: spec.sector, Method: f.method, Hidden: hp, ChunkBytes: f.chunkMiB << 20})
+		if err == nil {
+			refusal = ataPreconditions(spec, id, f, stderr)[f.method]
+		}
+	case engine.IsNVMe(f.method):
+		if nv == nil {
+			why := nvWhy
+			if why == "" {
+				why = "it is not an NVMe namespace"
+			}
+			fmt.Fprintf(stderr, "shunya: wipe: --method %s needs an NVMe drive; %s\n", f.method, why)
+			return 2
+		}
+		plan, err = engine.NewFirmwarePlan(engine.FirmwareInput{Target: spec.id, Media: spec.media, Virtual: spec.virtual,
+			SizeBytes: spec.size, SectorSize: spec.sector, Method: f.method, NVMe: nv, ChunkBytes: f.chunkMiB << 20})
+	default:
 		plan, err = engine.NewPlan(engine.PlanInput{Target: spec.id, Media: spec.media, Virtual: spec.virtual,
 			SizeBytes: size, SectorSize: spec.sector, Patterns: patterns,
 			ChunkBytes: f.chunkMiB << 20, SyncEvery: int64(f.syncMiB) << 20, Hidden: hp})
@@ -276,13 +293,10 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if plan.VerifyPattern == "" && (f.verify || f.sample > 0) {
-		fmt.Fprintln(stderr, "shunya: wipe: an enhanced Security Erase leaves a vendor-defined pattern; there is nothing to verify against (drop --verify/--sample)")
+		fmt.Fprintf(stderr, "shunya: wipe: %s leaves an indeterminate pattern; there is nothing to verify against (drop --verify/--sample; the marker check runs anyway)\n", plan.Method)
 		return 2
 	}
-	var refusal error
-	if erase {
-		refusal = ata.CheckErase(id, f.method == engine.MethodATAEnhancedErase, false)
-	}
+	_ = erase
 	if !f.execute {
 		if f.asJSON {
 			return writeJSON(stdout, stderr, plan)
@@ -295,6 +309,9 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 		opened := "the device was not opened"
 		if id != nil {
 			opened = "the device was opened read-only for ATA IDENTIFY, READ NATIVE MAX and DCO IDENTIFY only"
+		}
+		if nv != nil {
+			opened = "the device was opened read-only for NVMe Identify only"
 		}
 		fmt.Fprintf(stdout, "\nDRY RUN: nothing was written; %s. Add --execute --journal FILE --key FILE to wipe.\n", opened)
 		return 0
@@ -356,8 +373,12 @@ func runWipe(tg backend.Target, plan engine.Plan, rec engine.JournalRecorder, st
 	dev, isATA := ataDevice(tg)
 	work := tg
 	removeHPA := plan.Hidden != nil && plan.Hidden.RemoveHPA
-	if (removeHPA || plan.Method != engine.MethodOverwrite) && !isATA {
+	if (removeHPA || engine.IsATA(plan.Method)) && !isATA {
 		fmt.Fprintln(stderr, "shunya: wipe: the plan needs ATA commands but this target has no ATA pass-through")
+		return 1
+	}
+	if _, ok := nvmeDevice(tg); engine.IsNVMe(plan.Method) && !ok {
+		fmt.Fprintln(stderr, "shunya: wipe: the plan needs NVMe admin commands but this target has none")
 		return 1
 	}
 	if st != nil && st.Password != "" && removeHPA {
@@ -385,8 +406,8 @@ func runWipe(tg backend.Target, plan engine.Plan, rec engine.JournalRecorder, st
 	var code int
 	if plan.Method == engine.MethodOverwrite {
 		code = execute(ctx, work, plan, rec, opts, f, stdout, stderr)
-	} else if code = secureErase(ctx, dev, plan, rec, st, f, stdout); code == 0 {
-		code = verifyAndRecord(ctx, work, plan, rec, f, "", stdout, stderr)
+	} else {
+		code = firmwareWipe(ctx, tg, work, plan, rec, st, f, stdout, stderr)
 	}
 	if removeHPA {
 		switch code {
@@ -593,6 +614,11 @@ func printPlan(w io.Writer, p engine.Plan) {
 	switch h := p.Hidden; {
 	case h == nil && p.Media == engine.MediaImage:
 		fmt.Fprintln(w, "  hidden areas: n/a (image file)")
+	case h == nil && p.NVMe != nil:
+		c, n := p.NVMe.Controller, p.NVMe.Namespace
+		fmt.Fprintf(w, "  nvme:        namespace %d of %d active; SANICAP %#x, FNA %#x; deallocated blocks read as %s\n", n.NSID, len(p.NVMe.Active),
+			c.Sanicap.Raw, c.FNA.Raw, map[int]string{0: "(not reported)", 1: "zeros", 2: "ones"}[n.DeallocRead])
+		fmt.Fprintln(w, "  hidden areas: n/a (NVMe has no HPA/DCO; the namespace size is the controller's)")
 	case h == nil:
 		fmt.Fprintln(w, "  hidden areas: not checked")
 	default:
@@ -676,8 +702,21 @@ func cmdJournal(args []string, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintf(stdout, "  status: INCOMPLETE at pass %d/%d offset %d (%s); resumable\n", st.Pass+1, len(st.Plan.Passes), st.Offset, st.Pending())
 	}
-	if st.Plan.Method != engine.MethodOverwrite {
+	if st.Plan.Method == engine.MethodATAErase || st.Plan.Method == engine.MethodATAEnhancedErase {
 		fmt.Fprintf(stdout, "  method: %s; security steps journaled: %d (last: %s)\n", st.Plan.Method, len(st.SecuritySteps), orDash(st.SecurityStep))
+	}
+	if engine.IsFirmware(st.Plan.Method) {
+		fmt.Fprintf(stdout, "  method: %s, NIST level %s; markers planted %v; firmware events: %d\n", st.Plan.Method, levelName(st.Plan.Level), st.MarkersPlanted, len(st.FirmwareEvents))
+		for _, e := range st.FirmwareEvents {
+			fmt.Fprintf(stdout, "    - %s", e.Event)
+			if e.Progress > 0 {
+				fmt.Fprintf(stdout, " %.0f%%", 100*e.Progress)
+			}
+			if e.Note != "" {
+				fmt.Fprintf(stdout, " (%s)", e.Note)
+			}
+			fmt.Fprintln(stdout)
+		}
 	}
 	if h := st.Plan.Hidden; h != nil {
 		fmt.Fprintf(stdout, "  hidden areas before: %s\n", h.Before.Summary())

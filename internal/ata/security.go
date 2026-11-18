@@ -25,11 +25,18 @@ var ErrFrozen = errors.New("drive security is frozen")
 // FrozenError is ErrFrozen with the workaround explained.
 func FrozenError() error { return fmt.Errorf("%w: %s", ErrFrozen, FrozenHelp) }
 
-// EraseRefusal lists why a Security Erase can't be started.
-type EraseRefusal struct{ Reasons []string }
+// EraseRefusal lists why an erase (Security Erase by default, or What) can't start.
+type EraseRefusal struct {
+	What    string
+	Reasons []string
+}
 
 func (e *EraseRefusal) Error() string {
-	return "ATA Security Erase refused: " + strings.Join(e.Reasons, "; ")
+	w := e.What
+	if w == "" {
+		w = "ATA Security Erase"
+	}
+	return w + " refused: " + strings.Join(e.Reasons, "; ")
 }
 
 // CheckErase reports whether a Security Erase of mode can start on a drive in state id.

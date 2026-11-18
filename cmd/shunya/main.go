@@ -37,6 +37,9 @@ commands:
   verify --journal J ...  re-verify a finished wipe (full, or --sample N --seed HEX)
   journal show JOURNAL    verify a progress journal and show its history
   keys gen-dev FILE       create a temporary station signing key (until Milestone 7)
+  plan DEVICE            every erase method the drive supports, its NIST level, and the recommendation (read-only)
+  nvme identify DEVICE    decode NVMe Identify Controller/Namespace (read-only; --ctrl FILE parses saved data)
+  nvme sanitize-log DEV   NVMe Sanitize Status log
   ata identify DEVICE     decode the drive's ATA IDENTIFY data (read-only; --dump FILE parses a saved dump)
   ata hidden DEVICE       report HPA/DCO hidden areas (read-only)
   ata unlock ...          remove the temporary password of an interrupted Security Erase
@@ -66,6 +69,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdKeys(args[1:], stdout, stderr)
 	case "ata":
 		return cmdATA(args[1:], stdout, stderr)
+	case "nvme":
+		return cmdNVMe(args[1:], stdout, stderr)
+	case "plan":
+		return cmdPlan(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

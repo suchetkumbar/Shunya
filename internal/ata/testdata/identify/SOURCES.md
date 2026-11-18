@@ -22,3 +22,12 @@ None of these drives had an HPA, a DCO restriction or a password set when dumped
 Those states are produced by the simulated drive (`internal/ata/atafake`), which starts
 from these dumps and rewrites the capacity and Security words; anything proven only
 that way is labelled **pending-real-hardware**.
+
+## Emulated (lab)
+
+| File | Drive | Source |
+|---|---|---|
+| `qemu-ahci-sata-hdd.txt` | QEMU `ide-hd` on ICH9 AHCI, `rotation_rate=7200`, serial SHUNYA-SATA-HDD-01 | recorded by `TestLabATAIdentify` |
+| `qemu-ahci-sata-ssd.txt` | QEMU `ide-hd`, `rotation_rate=1`, serial SHUNYA-SATA-SSD-01 | recorded by `TestLabATAIdentify` |
+
+QEMU fills no integrity word (checksum "absent") and advertises no HPA, DCO or Security.

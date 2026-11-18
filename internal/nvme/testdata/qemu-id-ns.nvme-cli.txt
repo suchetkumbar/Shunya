@@ -1,0 +1,47 @@
+NVME Identify Namespace 1:
+nsze    : 0x200000
+ncap    : 0x200000
+nuse    : 0x200000
+nsfeat  : 0x34
+nlbaf   : 7
+flbas   : 0
+mc      : 0x3
+dpc     : 0x1f
+dps     : 0
+nmic    : 0x1
+rescap  : 0
+fpi     : 0
+dlfeat  : 9
+nawun   : 0
+nawupf  : 0
+nacwu   : 0
+nabsn   : 0
+nabo    : 0
+nabspf  : 0
+noiob   : 0
+nvmcap  : 0
+npwg    : 0
+npwa    : 0
+npdg    : 7
+npda    : 7
+nows    : 0
+mssrl   : 128
+mcl     : 128
+msrc    : 127
+kpios   : 0
+nulbaf  : 0
+kpiodaag: 0
+anagrpid: 0
+nsattr	: 0
+nvmsetid: 0
+endgid  : 1
+nguid   : 00000000000000000000000000000000
+eui64   : 5348554e59410001
+lbaf  0 : ms:0   lbads:9  rp:0 (in use)
+lbaf  1 : ms:8   lbads:9  rp:0 
+lbaf  2 : ms:16  lbads:9  rp:0 
+lbaf  3 : ms:64  lbads:9  rp:0 
+lbaf  4 : ms:0   lbads:12 rp:0 
+lbaf  5 : ms:8   lbads:12 rp:0 
+lbaf  6 : ms:16  lbads:12 rp:0 
+lbaf  7 : ms:64  lbads:12 rp:0 

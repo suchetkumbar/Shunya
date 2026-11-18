@@ -128,6 +128,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shunya: verify:", err)
 		return 2
 	}
+	explicit := f.verify || f.sample > 0
 	if f.sample == 0 {
 		f.verify = true
 	}
@@ -160,9 +161,13 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shunya: verify: %s is now %s, but the journal is for %s: refusing\n", spec.path, spec.id.Fingerprint, plan.Target.Fingerprint)
 		return 1
 	}
+	noPattern := false
 	if name, _ := plan.ExpectedPattern(); name == "" {
-		fmt.Fprintf(stderr, "shunya: verify: %s leaves a vendor-defined pattern; there is nothing to compare against\n", plan.Method)
-		return 2
+		if explicit || plan.Markers == nil {
+			fmt.Fprintf(stderr, "shunya: verify: %s leaves an indeterminate pattern; there is nothing to compare against (without --full/--sample the marker check runs)\n", plan.Method)
+			return 2
+		}
+		noPattern = true
 	}
 	tg, code := spec.open(f, false, stderr) // read-only
 	if code != 0 {
@@ -177,7 +182,14 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "verifying wipe %s of %s (read-only)\n", st.WipeID, spec.path)
-	return verifyAndRecord(ctx, work, plan, engine.JournalRecorder{W: w}, f, scope, stdout, stderr)
+	rec := engine.JournalRecorder{W: w}
+	code = 0
+	if plan.Markers != nil && plan.Markers.Seed != "" {
+		if code = checkMarkers(ctx, work, plan, rec, stdout, stderr); code == 1 || noPattern {
+			return code
+		}
+	}
+	return max(code, verifyAndRecord(ctx, work, plan, rec, f, scope, stdout, stderr))
 }
 
 // verifyTarget is the target a later verification reads. With a wiped HPA: if the

@@ -143,6 +143,7 @@ func EnumerateWith(fsys fs.FS, opts Options) (*Report, error) {
 		if d.Status == "" {
 			d.Status = StatusAvailable
 		}
+		markHypervisor(d, rep.System)
 		rep.Devices = append(rep.Devices, *d)
 	}
 	rep.Warnings = append(rep.Warnings, fmt.Sprintf(

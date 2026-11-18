@@ -18,7 +18,7 @@ type Level string
 const (
 	LevelClear Level = "clear"
 	// LevelPurge is produced only by firmware erase commands, and only where SP 800-88
-	// accepts them for the media (see methodLevel).
+	// accepts them for the media (see firmwareLevel).
 	LevelPurge Level = "purge"
 )
 
@@ -83,6 +83,8 @@ type Plan struct {
 	// result is vendor-defined (enhanced erase) and cannot be checked.
 	VerifyPattern string      `json:"verify_pattern,omitempty"`
 	Hidden        *HiddenPlan `json:"hidden,omitempty"`
+	NVMe          *NVMePlan   `json:"nvme,omitempty"`
+	Markers       *MarkerPlan `json:"markers,omitempty"`
 	Notes         []string    `json:"notes"`
 }
 
@@ -136,6 +138,13 @@ func (p *Plan) GenerateKeys(r io.Reader) error {
 	if r == nil {
 		r = rand.Reader
 	}
+	if p.Markers != nil && p.Markers.Seed == "" {
+		m, err := NewMarkerPlan(p.Markers.Count, r)
+		if err != nil {
+			return fmt.Errorf("marker key: %w", err)
+		}
+		p.Markers = m
+	}
 	for i := range p.Passes {
 		if p.Passes[i].Pattern != PatternRandom {
 			continue
@@ -169,22 +178,30 @@ func (p Plan) validate(needKeys bool) error {
 		if len(p.Passes) > 0 && p.VerifyPattern != "" && p.VerifyPattern != p.Passes[len(p.Passes)-1].Pattern {
 			bad("verify pattern %q is not the last pass", p.VerifyPattern)
 		}
-	case MethodATAErase, MethodATAEnhancedErase:
+	case MethodATAErase, MethodATAEnhancedErase, MethodATASanitizeCrypto, MethodATASanitizeBlock, MethodATASanitizeOverwrite,
+		MethodNVMeSanitizeCrypto, MethodNVMeSanitizeBlock, MethodNVMeSanitizeOverwrite, MethodNVMeFormatCrypto, MethodNVMeFormatUserData:
 		if len(p.Passes) != 0 {
 			bad("%s takes no overwrite passes", p.Method)
 		}
-		if want := methodLevel(p.Method, p.Media, p.Virtual, p.Hidden); p.Level != want {
+		if want := firmwareLevel(p.Method, p.Media, p.Virtual, p.Hidden); p.Level != want {
 			bad("%s on %s media is %s, not %s", p.Method, p.Media, want, p.Level)
 		}
-		wantVP := PatternZero
-		if p.Method == MethodATAEnhancedErase {
-			wantVP = ""
+		if want := expectedPattern(p.Method, p.NVMe); p.VerifyPattern != want {
+			bad("%s: verify pattern %q, want %q", p.Method, p.VerifyPattern, want)
 		}
-		if p.VerifyPattern != wantVP {
-			bad("%s: verify pattern %q, want %q", p.Method, p.VerifyPattern, wantVP)
+		if err := supported(p); err != nil {
+			bad("%v", err)
 		}
-		if p.Hidden == nil || !p.Hidden.Before.Checked {
-			bad("%s needs the hidden-area state from IDENTIFY", p.Method)
+		if IsNVMe(p.Method) && p.Hidden != nil {
+			bad("an NVMe plan has no ATA hidden-area section")
+		}
+		if needKeys && p.Markers != nil && p.Markers.Seed == "" {
+			bad("marker plan without seed and key")
+		}
+		if p.Markers != nil && p.Markers.Seed != "" {
+			if err := p.Markers.validate(); err != nil {
+				bad("%v", err)
+			}
 		}
 	default:
 		bad("unknown method %q", p.Method)
@@ -291,33 +308,12 @@ type EraseInput struct {
 // allows it (supported, not frozen, …) is checked by ata.CheckErase when it runs; the
 // plan records the state found at planning.
 func NewErasePlan(in EraseInput) (Plan, error) {
-	if in.ChunkBytes == 0 {
-		in.ChunkBytes = DefaultChunk
-	}
-	p := Plan{Version: 1, Target: in.Target, Media: in.Media, Virtual: in.Virtual, Method: MethodATAErase,
-		SizeBytes: in.SizeBytes, SectorSize: in.SectorSize, ChunkBytes: in.ChunkBytes, SyncEveryBytes: DefaultSyncEvery,
-		Hidden: in.Hidden, VerifyPattern: PatternZero}
+	m := MethodATAErase
 	if in.Enhanced {
-		p.Method, p.VerifyPattern = MethodATAEnhancedErase, ""
+		m = MethodATAEnhancedErase
 	}
-	p.Level = methodLevel(p.Method, p.Media, p.Virtual, p.Hidden)
-	if err := p.validate(false); err != nil {
-		return Plan{}, err
-	}
-	if s := in.Hidden.Security; s != nil {
-		m := s.NormalEraseMinutes
-		if in.Enhanced {
-			m = s.EnhancedEraseMinutes
-		}
-		if m > 0 {
-			p.EstimateSeconds = float64(m * 60)
-		}
-	}
-	if p.EstimateSeconds == 0 {
-		p.EstimateSeconds = float64(p.SizeBytes) / assumedRate(p.Media)
-	}
-	p.Notes = eraseNotes(p)
-	return p, nil
+	return NewFirmwarePlan(FirmwareInput{Target: in.Target, Media: in.Media, Virtual: in.Virtual, SizeBytes: in.SizeBytes,
+		SectorSize: in.SectorSize, Method: m, Hidden: in.Hidden, ChunkBytes: in.ChunkBytes})
 }
 
 func eraseNotes(p Plan) []string {

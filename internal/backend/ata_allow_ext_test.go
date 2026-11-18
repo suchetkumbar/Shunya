@@ -52,3 +52,13 @@ func TestCheckATAAllowsEveryATACommand(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckATAAllowsSanitizeCommands(t *testing.T) {
+	ow, _ := ata.SanitizeOverwrite(1, 0)
+	for _, c := range []ata.Command{ata.SanitizeStatus(), ata.SanitizeCryptoScramble(), ata.SanitizeBlockErase(), ow} {
+		got, err := backend.CheckATA(c.CDB(), nil)
+		if err != nil || got.Mutating != (c.TF.Feature != 0) {
+			t.Errorf("%s: %+v %v", c.Name, got, err)
+		}
+	}
+}

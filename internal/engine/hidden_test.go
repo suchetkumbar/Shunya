@@ -9,6 +9,7 @@ import (
 	"shunya/internal/backend"
 	"shunya/internal/device"
 	"shunya/internal/journal"
+	"shunya/internal/sanitize"
 )
 
 func hiddenHPA() *HiddenPlan {
@@ -50,6 +51,7 @@ func TestErasePlanLevels(t *testing.T) {
 			if p.Level != tc.want {
 				t.Fatalf("level %s, want %s", p.Level, tc.want)
 			}
+			p.GenerateKeys(nil)
 			if err := p.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -135,6 +137,7 @@ func erasePlan(t *testing.T) Plan {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.GenerateKeys(nil)
 	return p
 }
 
@@ -148,6 +151,7 @@ func TestReplayEraseJournal(t *testing.T) {
 	removed := hiddenHPA().Before
 	removed.ReportedSectors, removed.HPA = 2112, false
 	rec.Hidden(HiddenEvent{Event: HiddenRemoved, State: removed})
+	rec.Firmware(sanitize.Event{Event: EvMarkersPlanted})
 	for _, s := range []ata.Step{{Step: ata.StepSetPassword, Password: "shunya-x"}, {Step: ata.StepErasePrepare},
 		{Step: ata.StepEraseUnit, Mode: "normal"}, {Step: ata.StepEraseDone, Seconds: 3}, {Step: ata.StepChecked}} {
 		rec.Security(s)
@@ -185,6 +189,7 @@ func TestReplayEraseRejects(t *testing.T) {
 			w, _ := journal.Create(jpath, jkey)
 			rec := JournalRecorder{w}
 			rec.Start("id", "t", erasePlan(t))
+			rec.Firmware(sanitize.Event{Event: EvMarkersPlanted}) // isolate each case from the marker rule
 			f(rec)
 			w.Close()
 			if _, err := Replay(readLog(t, jpath)); err == nil {

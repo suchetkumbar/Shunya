@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"shunya/internal/ata"
 	"shunya/internal/journal"
+	"shunya/internal/sanitize"
 )
 
 // Journal record types written by the engine.
@@ -211,6 +213,11 @@ type State struct {
 	SecuritySteps []ata.Step
 	SecurityStep  string
 	Password      string
+	// Firmware erases (Milestone 6).
+	FirmwareEvents  []sanitize.Event
+	MarkersPlanted  bool
+	FirmwareStarted bool
+	FirmwareDone    bool
 }
 
 // Replay rebuilds the wipe state from a verified journal and checks that the records
@@ -322,8 +329,8 @@ func Replay(log *journal.Log) (State, error) {
 			}
 			st.HiddenEvents = append(st.HiddenEvents, e)
 		case RecSecurity:
-			if !erase {
-				return bad(i, "security step in an overwrite journal")
+			if st.Plan.Method != MethodATAErase && st.Plan.Method != MethodATAEnhancedErase {
+				return bad(i, "security step in a %s journal", st.Plan.Method)
 			}
 			var s ata.Step
 			if err := r.Decode(&s); err != nil {
@@ -344,11 +351,26 @@ func Replay(log *journal.Log) (State, error) {
 				st.SecurityStep = s.Step
 			}
 			st.SecuritySteps = append(st.SecuritySteps, s)
+		case RecFirmware:
+			var e sanitize.Event
+			if err := r.Decode(&e); err != nil {
+				return bad(i, "%v", err)
+			}
+			if err := st.replayFirmware(e); err != nil {
+				return bad(i, "%v", err)
+			}
 		case RecDone:
 			if st.Pass != len(st.Plan.Passes) {
 				return bad(i, "done after %d of %d passes", st.Pass, len(st.Plan.Passes))
 			}
-			if erase && st.SecurityStep != ata.StepChecked {
+			if IsFirmware(st.Plan.Method) && st.Plan.Markers != nil && !st.MarkersPlanted {
+				return bad(i, "done without the markers planted")
+			}
+			if (IsSanitize(st.Plan.Method) || strings.HasPrefix(st.Plan.Method, "nvme-format")) && !st.FirmwareDone {
+				return bad(i, "done before the drive reported the erase complete")
+			}
+			se := st.Plan.Method == MethodATAErase || st.Plan.Method == MethodATAEnhancedErase
+			if se && st.SecurityStep != ata.StepChecked {
 				return bad(i, "done before the security state was checked (last step %q)", st.SecurityStep)
 			}
 			st.Done, st.Finished = true, r.At()
@@ -370,4 +392,55 @@ func (st State) Pending() string {
 		return st.Stopped
 	}
 	return StopUnclean
+}
+
+// RecFirmware records a firmware-erase step (sanitize.Event): markers planted, format or
+// sanitize started, progress, completion.
+const RecFirmware = "firmware"
+
+// Firmware events besides internal/sanitize's.
+const (
+	EvMarkersPlanted  = "markers-planted"
+	EvFormatStarted   = "format-started"
+	EvFormatCompleted = "format-completed"
+)
+
+// Firmware records a firmware-erase step.
+func (j JournalRecorder) Firmware(e sanitize.Event) error {
+	_, err := j.W.Append(RecFirmware, e)
+	return err
+}
+
+// replayFirmware applies one firmware record to the state.
+func (st *State) replayFirmware(e sanitize.Event) error {
+	if !IsFirmware(st.Plan.Method) {
+		return fmt.Errorf("firmware event %q in a %s journal", e.Event, st.Plan.Method)
+	}
+	se := st.Plan.Method == MethodATAErase || st.Plan.Method == MethodATAEnhancedErase
+	switch e.Event {
+	case EvMarkersPlanted:
+		if st.Plan.Markers == nil {
+			return fmt.Errorf("markers planted but the plan has none")
+		}
+		st.MarkersPlanted = true
+	case sanitize.EvStarted, sanitize.EvWaiting, sanitize.EvProgress, EvFormatStarted:
+		if se || (e.Event == EvFormatStarted) == IsSanitize(st.Plan.Method) {
+			return fmt.Errorf("event %q does not belong to %s", e.Event, st.Plan.Method)
+		}
+		if st.Plan.Markers != nil && !st.MarkersPlanted {
+			return fmt.Errorf("%q before the markers were planted", e.Event)
+		}
+		st.FirmwareStarted = true
+	case sanitize.EvCompleted, sanitize.EvAttested, EvFormatCompleted:
+		if se || !st.FirmwareStarted && e.Event != sanitize.EvAttested {
+			return fmt.Errorf("%q before the erase started", e.Event)
+		}
+		st.FirmwareDone = true
+	case sanitize.EvFailed:
+		st.FirmwareDone = false
+	default:
+		return fmt.Errorf("unknown firmware event %q", e.Event)
+	}
+	st.FirmwareEvents = append(st.FirmwareEvents, e)
+	return nil
 }

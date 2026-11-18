@@ -21,8 +21,8 @@ revision before relying on it.
 | Media | Methods (M5) | Level claimed | Not reached by an overwrite | Purge method |
 |---|---|---|---|---|
 | HDD (SATA) | Overwrite, 1 pass (+ HPA); ATA Security Erase, normal or enhanced (+ HPA) | Overwrite: Clear. Security Erase: **Purge** (SP 800-88 Rev. 1 App. A, ATA hard disk drives) | Reallocated (grown-defect) sectors; DCO-hidden sectors (disclosed, never removed) | ATA Security Erase (M5); ATA SANITIZE not implemented yet |
-| SATA SSD | Overwrite (+ HPA); ATA Security Erase (+ HPA) | Clear for both: a Security Erase's effect on flash is vendor-defined and can't be checked from the host | Over-provisioned, retired and remapped flash blocks; DCO-hidden sectors | ATA SANITIZE block erase / crypto scramble: IDENTIFY reports support (word 59); the commands are not implemented yet |
-| NVMe SSD | Overwrite, 1 pass | Clear | Over-provisioned and remapped flash | NVMe Sanitize / Format NVM with crypto or user-data erase (M6) |
+| SATA SSD | Overwrite (+ HPA); ATA Security Erase (+ HPA); ATA SANITIZE crypto scramble / block erase / overwrite (M6) | Overwrite, Security Erase: Clear. **Sanitize: Purge** | Over-provisioned, retired and remapped flash blocks; DCO-hidden sectors | ATA SANITIZE (crypto scramble preferred) |
+| NVMe SSD | Overwrite; Format NVM SES 1/2; Sanitize crypto / block / overwrite (M6) | Overwrite: Clear. **Format (SES 1, SES 2 if FNA bit 2) and Sanitize: Purge**; Clear when virtual | Over-provisioned and remapped flash | Sanitize crypto > block > Format crypto > Format user data > Sanitize overwrite |
 | USB flash, SD card | Overwrite, 1 pass | Clear | Controller-managed spare blocks; bridges usually block firmware commands | None reachable through most USB bridges; Destroy for high-sensitivity data |
 | USB HDD/SSD (bridge) | Overwrite, 1 pass | Clear | As the underlying media; HPA/DCO (ATA identity can't be tied to the selected device through a bridge, so ATA is not used) | None through bridges yet |
 | eMMC | Overwrite, 1 pass | Clear | Spare blocks | eMMC Secure Erase / Sanitize (stretch goal) |
@@ -94,3 +94,21 @@ say so.
 - **Hidden areas first:** an HPA is removed (volatile) before the erase command, because
   some drives erase only up to the current max. A DCO-hidden range is disclosed as possibly
   not erased.
+
+## Firmware sanitize and NVMe Format (Milestone 6)
+
+| Method | Level | Read-back after | Why this level |
+|---|---|---|---|
+| NVMe Sanitize crypto erase / ATA CRYPTO SCRAMBLE | Purge | markers only | changes the media key for all user data, spare and cache included |
+| NVMe Sanitize block erase / ATA BLOCK ERASE | Purge | DLFEAT pattern (NVMe) or markers | erases every physical block |
+| NVMe Sanitize / ATA SANITIZE overwrite | Purge | zeros | overwrites every physical location (slow; wears flash) |
+| NVMe Format, crypto erase (SES 2) | Purge, only if FNA bit 2 | markers only | SP 800-88 Rev. 1 lists it for NVMe SSDs |
+| NVMe Format, user data erase (SES 1) | Purge, with a caveat | DLFEAT pattern | SP 800-88 Rev. 1 lists it; its scope over spare blocks is vendor-defined, so Sanitize ranks higher |
+| Any of these on a virtual disk | Clear | as above | the command reaches an emulation |
+
+- A method is offered only when the drive advertises it. A command that merely completes
+  successfully proves nothing: QEMU completes SES 2 with FNA bit 2 clear.
+- Markers (1024 HMAC-tagged sectors planted before the erase) must all be gone afterwards.
+  This is the one content check possible after a crypto erase.
+- `shunya plan DEVICE` prints every option with its level and reason. Re-check these
+  levels against the SP 800-88 revision (and IEEE 2883) in force before relying on them.

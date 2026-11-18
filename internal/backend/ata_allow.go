@@ -51,6 +51,7 @@ var ataAllow = map[byte]ataRule{
 	0xf3: {name: "SECURITY ERASE PREPARE", proto: 3, mutating: true},
 	0xf4: {name: "SECURITY ERASE UNIT", proto: 5, dir: -1, oneBlock: true, mutating: true},
 	0xf6: {name: "SECURITY DISABLE PASSWORD", proto: 5, dir: -1, oneBlock: true, mutating: true},
+	0xb4: {name: "SANITIZE DEVICE", ext: true, proto: 3},
 }
 
 // CheckATA checks one ATA PASS-THROUGH(16) CDB and its data buffer against the
@@ -112,6 +113,20 @@ func CheckATA(cdb [16]byte, data []byte) (ATACommand, error) {
 	case 0x37:
 		if cdb[6]&1 != 0 {
 			return refuse("non-volatile SET MAX ADDRESS (the Value Volatile bit must be clear: Shunya never changes a drive's size permanently)")
+		}
+	case 0xb4:
+		feat := uint16(cdb[3])<<8 | uint16(cdb[4])
+		lba := uint64(cdb[8]) | uint64(cdb[10])<<8 | uint64(cdb[12])<<16 | uint64(cdb[7])<<24 | uint64(cdb[9])<<32 | uint64(cdb[11])<<40
+		switch {
+		case feat == 0x0000 && cdb[6]&1 == 0:
+			c.Name = "SANITIZE STATUS EXT"
+		case feat == 0x0011 && lba == 0x43727970, feat == 0x0012 && lba == 0x426b4572, feat == 0x0014 && lba>>32 == 0x4f57:
+			if cdb[6]&0x10 != 0 {
+				return refuse("SANITIZE with the failure-mode bit")
+			}
+			c.Name, c.Mutating = fmt.Sprintf("SANITIZE %04X", feat), true
+		default:
+			return refuse("SANITIZE subcommand %#04x (freeze lock, antifreeze, wrong key or status with clear-failure are not allowed)", feat)
 		}
 	case 0xf1:
 		if data[0]&1 != 0 {

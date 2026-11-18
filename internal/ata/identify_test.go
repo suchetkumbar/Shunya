@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -259,4 +260,18 @@ func FuzzParseHdparmDump(f *testing.F) {
 			t.Fatalf("%d bytes", len(raw))
 		}
 	})
+}
+
+// IDENTIFY as QEMU's AHCI disks answer it in the lab (emulated, recorded by the lab test).
+func TestParseIdentifyQEMU(t *testing.T) {
+	for file, solid := range map[string]bool{"qemu-ahci-sata-hdd.txt": false, "qemu-ahci-sata-ssd.txt": true} {
+		id, err := ParseIdentify(loadDump(t, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(id.Serial, "SHUNYA-SATA-") || id.Sectors() != 2097152 || id.SolidState() != solid ||
+			id.HPASupported || id.DCOSupported || id.Security.Supported || id.Checksum != "absent" {
+			t.Errorf("%s: %+v", file, id)
+		}
+	}
 }

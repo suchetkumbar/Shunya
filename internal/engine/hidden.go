@@ -32,6 +32,8 @@ type HiddenPlan struct {
 	Security *ata.Security `json:"security,omitempty"`
 	// KeepReason says why an HPA that was found is not removed and wiped.
 	KeepReason string `json:"hpa_kept_reason,omitempty"`
+	// Sanitize is the ATA Sanitize feature set support from IDENTIFY (word 59).
+	Sanitize *ata.Sanitize `json:"sanitize,omitempty"`
 }
 
 func (h *HiddenPlan) validate(size int64, sector int) error {
@@ -70,21 +72,6 @@ func (h *HiddenPlan) HiddenFrom() int64 {
 		return -1
 	}
 	return h.VisibleBytes
-}
-
-// methodLevel is the NIST SP 800-88 level a firmware erase earns. ATA Security Erase on
-// a real rotating disk is Purge (SP 800-88 Rev. 1, Appendix A, ATA hard disk drives).
-// On flash its effect is vendor-defined and cannot be checked from the host, so Shunya
-// reports Clear (SP 800-88 relies on ATA SANITIZE or a verified crypto erase for SSD
-// Purge). On a virtual disk the command reaches an emulation, not a medium.
-func methodLevel(method string, media device.MediaType, virtual bool, h *HiddenPlan) Level {
-	if method == MethodOverwrite {
-		return LevelClear
-	}
-	if media == device.MediaHDD && !virtual && h != nil && !h.SolidState {
-		return LevelPurge
-	}
-	return LevelClear
 }
 
 // notes are the plan's hidden-area disclosures.

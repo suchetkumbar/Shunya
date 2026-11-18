@@ -243,9 +243,9 @@ func TestLabVM(t *testing.T) {
 		"vdb": {transport: TransportVirtio, media: MediaVirtual, confidence: High, status: StatusAvailable,
 			serial: "SHUNYA-VIRTIO-01", virtual: true},
 		"sda": {transport: TransportSATA, media: MediaHDD, confidence: High, status: StatusAvailable,
-			serial: "SHUNYA-SATA-HDD-01", model: "SHUNYA LAB SATA", firmware: "2.5+"},
+			serial: "SHUNYA-SATA-HDD-01", model: "SHUNYA LAB SATA", firmware: "2.5+", virtual: true}, // virtual from DMI (M6),
 		"sdb": {transport: TransportSATA, media: MediaSSD, confidence: High, status: StatusAvailable,
-			serial: "SHUNYA-SATA-SSD-01"},
+			serial: "SHUNYA-SATA-SSD-01", virtual: true},
 		"nvme0n1": {transport: TransportNVMe, media: MediaNVMeSSD, confidence: High, status: StatusAvailable,
 			serial: "SHUNYA-NVME-01", model: "QEMU NVMe Ctrl", wwid: "eui.5348554e59410001", virtual: true},
 		"sdc": {transport: TransportUSB, media: MediaUSBFlash, confidence: Medium, status: StatusAvailable,
@@ -319,6 +319,36 @@ func TestEnumerateExtraProtect(t *testing.T) {
 	for _, d := range r.Devices {
 		if d.Name == "sda" && (len(d.Partitions) != 1 || d.Partitions[0].DevNum != "8:1") {
 			t.Errorf("sda partitions %+v", d.Partitions)
+		}
+	}
+}
+
+// Found in the M6 lab run: QEMU SATA disks with custom model strings looked physical.
+// On a virtual machine every physical-looking disk is treated as emulated.
+func TestHypervisorMarksDisks(t *testing.T) {
+	for sys, want := range map[System]bool{
+		{DMIVendor: "QEMU", DMIProduct: "Standard PC (Q35 + ICH9, 2009)"}:   true,
+		{DMIVendor: "Microsoft Corporation", DMIProduct: "Virtual Machine"}: true,
+		{DMIVendor: "innotek GmbH", DMIProduct: "VirtualBox"}:               true,
+		{DMIVendor: "Dell Inc.", DMIProduct: "OptiPlex 7090"}:               false,
+		{DMIVendor: "LENOVO", DMIProduct: "20XW0055US"}:                     false,
+		{}: false,
+	} {
+		d := &Device{Media: Media{Type: MediaHDD}}
+		markHypervisor(d, sys)
+		if d.Media.Virtual != want {
+			t.Errorf("%+v: virtual %v", sys, d.Media.Virtual)
+		}
+		l := &Device{Media: Media{Type: MediaLogical}}
+		markHypervisor(l, sys)
+		if l.Media.Virtual {
+			t.Error("logical device marked virtual")
+		}
+	}
+	r := enumerateSpec(t, "lab-vm")
+	for _, d := range r.Devices {
+		if d.Name == "sda" && !strings.Contains(strings.Join(d.Media.Reasons, " "), "virtual machine") {
+			t.Errorf("sda reasons %v", d.Media.Reasons)
 		}
 	}
 }

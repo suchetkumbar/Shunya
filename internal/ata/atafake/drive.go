@@ -44,6 +44,16 @@ type Options struct {
 	FixedSense bool
 	// EraseMinutes: IDENTIFY words 89/90 (0: not reported).
 	EraseMinutes int
+	// EraseKeepsPassword: buggy firmware that erases but leaves the user password set.
+	EraseKeepsPassword bool
+	// IgnoreDisable: SECURITY DISABLE PASSWORD succeeds but changes nothing.
+	IgnoreDisable bool
+	// Sanitize feature set: supported erases (IDENTIFY word 59), a freeze lock from
+	// the "BIOS", how many SANITIZE STATUS polls an erase takes (default 2), failure.
+	SanitizeCrypto, SanitizeBlock, SanitizeOverwrite bool
+	SanitizeFrozen                                   bool
+	SanitizePolls                                    int
+	SanitizeFails                                    bool
 }
 
 // Drive is the simulated drive.
@@ -64,6 +74,12 @@ type Drive struct {
 	attempts     int
 	prepared     bool
 	password     []byte
+
+	// sanitize: 0 idle, 1 in progress, 2 completed, 3 failed
+	sanState, sanLeft int
+	sanFill           []byte
+	// Sanitizes counts started sanitize operations.
+	Sanitizes int
 
 	data   map[uint64][]byte
 	erased []fill // later entries win
@@ -232,6 +248,11 @@ func (d *Drive) identify() []byte {
 		}
 	}
 	w[128] = s
+	san := d.o.SanitizeCrypto || d.o.SanitizeBlock || d.o.SanitizeOverwrite
+	set(59, 12, san)
+	set(59, 13, d.o.SanitizeCrypto)
+	set(59, 14, d.o.SanitizeOverwrite)
+	set(59, 15, d.o.SanitizeBlock)
 	em := uint16(min(d.o.EraseMinutes/2, 254))
 	w[89], w[90] = em, em
 	b := make([]byte, 512)
@@ -268,6 +289,7 @@ func (d *Drive) dcoData() []byte {
 // regs is the outcome of one command.
 type regs struct {
 	status, err uint8
+	count       uint16
 	lba         uint64
 }
 
@@ -315,6 +337,9 @@ func (d *Drive) exec(dc ata.Decoded, data []byte) regs {
 	name := fmt.Sprintf("%02X", tf.Command)
 	defer func() { d.Log = append(d.Log, name) }()
 	lockedOK := func() bool { return !d.locked }
+	if d.sanState == 1 && tf.Command != ata.CmdSanitizeDevice && tf.Command != ata.CmdIdentifyDevice {
+		return abort() // a drive refuses other commands while it sanitizes
+	}
 	switch tf.Command {
 	case ata.CmdIdentifyDevice:
 		name = "IDENTIFY"
@@ -376,6 +401,9 @@ func (d *Drive) exec(dc ata.Decoded, data []byte) regs {
 	case ata.CmdFlushCacheExt:
 		name = "FLUSH CACHE EXT"
 		return ok
+	case ata.CmdSanitizeDevice:
+		name = fmt.Sprintf("SANITIZE %04X", tf.Feature)
+		return d.sanitize(tf)
 	case ata.CmdSecuritySetPassword:
 		name = "SECURITY SET PASSWORD"
 		if !d.o.Security || d.frozen || d.locked {
@@ -434,7 +462,9 @@ func (d *Drive) exec(dc ata.Decoded, data []byte) regs {
 			}
 		}
 		d.erased = append(d.erased, f)
-		d.enabled, d.locked, d.password = false, false, nil
+		if !d.o.EraseKeepsPassword {
+			d.enabled, d.locked, d.password = false, false, nil
+		}
 		return ok
 	case ata.CmdSecurityDisablePass:
 		name = "SECURITY DISABLE PASSWORD"
@@ -446,6 +476,9 @@ func (d *Drive) exec(dc ata.Decoded, data []byte) regs {
 		}
 		if !d.checkPW(data) {
 			return abort()
+		}
+		if d.o.IgnoreDisable {
+			return ok
 		}
 		d.enabled, d.password = false, nil
 		return ok
@@ -478,7 +511,7 @@ func (d *Drive) sense(r regs, ext bool) []byte {
 	if d.o.FixedSense {
 		b := make([]byte, 18)
 		b[0], b[2], b[7] = 0xf0, key, 10
-		b[3], b[4], b[5], b[6] = r.err, r.status, 0x40, 0
+		b[3], b[4], b[5], b[6] = r.err, r.status, 0x40, byte(r.count)
 		if ext {
 			b[8] |= 0x80
 		}
@@ -490,7 +523,7 @@ func (d *Drive) sense(r regs, ext bool) []byte {
 		return b
 	}
 	b := []byte{0x72, key, asc, ascq, 0, 0, 0, 14,
-		0x09, 0x0c, 0, r.err, 0, 0,
+		0x09, 0x0c, 0, r.err, byte(r.count >> 8), byte(r.count),
 		byte(r.lba >> 24), byte(r.lba), byte(r.lba >> 32), byte(r.lba >> 8), byte(r.lba >> 40), byte(r.lba >> 16),
 		0x40, r.status}
 	if ext {
@@ -536,6 +569,9 @@ func (v *Visible) rw(p []byte, off int64, write bool) (int, error) {
 	}
 	v.d.mu.Lock()
 	defer v.d.mu.Unlock()
+	if v.d.sanState == 1 {
+		return 0, errors.New("atafake: I/O error (sanitize in progress)")
+	}
 	if v.d.locked {
 		return 0, errors.New("atafake: I/O error (drive locked)")
 	}
@@ -552,3 +588,70 @@ func (v *Visible) rw(p []byte, off int64, write bool) (int, error) {
 
 func (v *Visible) ReadAt(p []byte, off int64) (int, error)  { return v.rw(p, off, false) }
 func (v *Visible) WriteAt(p []byte, off int64) (int, error) { return v.rw(p, off, true) }
+
+// sanitize handles SANITIZE DEVICE subcommands.
+func (d *Drive) sanitize(tf ata.Taskfile) regs {
+	switch tf.Feature {
+	case ata.SanitizeStatusExt:
+		switch d.sanState {
+		case 3:
+			r := abort()
+			r.lba = 1 // reason: sanitize unsuccessful
+			return r
+		case 1:
+			if d.sanLeft--; d.sanLeft <= 0 {
+				d.finishSanitize()
+				return d.sanitize(tf)
+			}
+			return regs{status: ata.StatusDRDY, count: 1 << 14, lba: 0x8000}
+		}
+		var c uint16
+		if d.sanState == 2 {
+			c |= 1 << 15
+		}
+		if d.o.SanitizeFrozen {
+			c |= 1 << 13
+		}
+		return regs{status: ata.StatusDRDY, count: c}
+	case ata.SanitizeCryptoExt, ata.SanitizeBlockEraseEx, ata.SanitizeOverwriteExt:
+		valid := map[uint16]bool{ata.SanitizeCryptoExt: d.o.SanitizeCrypto && tf.LBA == 0x43727970,
+			ata.SanitizeBlockEraseEx: d.o.SanitizeBlock && tf.LBA == 0x426b4572,
+			ata.SanitizeOverwriteExt: d.o.SanitizeOverwrite && tf.LBA>>32 == 0x4f57}[tf.Feature]
+		if !valid || d.o.SanitizeFrozen || d.locked || d.sanState == 1 {
+			return abort()
+		}
+		switch tf.Feature {
+		case ata.SanitizeCryptoExt:
+			d.sanFill = []byte{0xc5}
+		case ata.SanitizeBlockEraseEx:
+			d.sanFill = []byte{0xff}
+		default:
+			p := uint32(tf.LBA)
+			d.sanFill = []byte{byte(p >> 24), byte(p >> 16), byte(p >> 8), byte(p)}
+		}
+		d.sanState, d.sanLeft = 1, max(d.o.SanitizePolls, 2)
+		d.Sanitizes++
+		return ok
+	}
+	return abort() // FREEZE LOCK, ANTIFREEZE and anything else
+}
+
+// finishSanitize applies the erase to every sector up to the native maximum.
+func (d *Drive) finishSanitize() {
+	if d.o.SanitizeFails {
+		d.sanState = 3
+		return
+	}
+	for lba := range d.data {
+		delete(d.data, lba)
+	}
+	if len(d.sanFill) == 1 {
+		d.erased = append(d.erased, fill{from: 0, to: d.o.NativeSectors, b: d.sanFill[0]})
+	} else {
+		sec := bytes.Repeat(d.sanFill, ata.SectorBytes/len(d.sanFill))
+		for lba := uint64(0); lba < d.o.NativeSectors; lba++ {
+			d.data[lba] = sec
+		}
+	}
+	d.sanState = 2
+}

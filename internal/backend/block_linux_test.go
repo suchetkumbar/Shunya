@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"shunya/internal/nvme"
 	"shunya/internal/sysfs"
 )
 
@@ -26,6 +27,7 @@ type fakeOps struct {
 	forbid bool // fail the test if open is reached
 	disc   [][2]uint64
 	cdbs   [][16]byte // SG_IO calls that reached the "ioctl"
+	admins []nvme.AdminCmd
 }
 
 func (f *fakeOps) ops() blockOps {
@@ -48,6 +50,10 @@ func (f *fakeOps) ops() blockOps {
 		sgio: func(_ *os.File, cdb [16]byte, _ int, _ []byte, _ time.Duration) ([]byte, error) {
 			f.cdbs = append(f.cdbs, cdb)
 			return nil, nil
+		},
+		nvmeAdmin: func(_ *os.File, c nvme.AdminCmd, _ []byte) (uint32, nvme.Status, error) {
+			f.admins = append(f.admins, c)
+			return 0, 0, nil
 		},
 	}
 }
@@ -300,5 +306,37 @@ func TestBlockPassThrough(t *testing.T) {
 	}
 	if len(fo.cdbs) != 0 {
 		t.Fatal("refused CDB reached the ioctl")
+	}
+}
+
+// NVMe admin commands pass the same guards: read-only Identify on a dry run, Format and
+// Sanitize only with Execute after the re-check, NVMe devices only.
+func TestBlockNVMeAdmin(t *testing.T) {
+	ctx := context.Background()
+	idc := nvme.IdentifyController()
+	san, _ := nvme.Sanitize(nvme.SanactBlockErase, 0, 0)
+	b, fo, _ := openSDB(t, Options{})
+	b.selected.Transport = "nvme"
+	if _, _, err := b.AdminCommand(ctx, idc.Cmd, make([]byte, 4096)); err != nil {
+		t.Fatalf("identify on a dry run: %v", err)
+	}
+	if _, _, err := b.AdminCommand(ctx, san.Cmd, nil); !errors.Is(err, ErrDryRun) {
+		t.Fatalf("sanitize on a dry run: %v", err)
+	}
+	if len(fo.admins) != 1 {
+		t.Fatalf("%d commands reached the ioctl", len(fo.admins))
+	}
+	b, fo, m := openSDB(t, Options{Execute: true})
+	b.selected.Transport = "nvme"
+	m[sdbDir+"/vpd_pg80"].Data = append([]byte{0, 0x80, 0, 9}, "OTHERDISK"...)
+	if _, _, err := b.AdminCommand(ctx, san.Cmd, nil); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("after a swap: %v", err)
+	}
+	b, fo2, _ := openSDB(t, Options{Execute: true})
+	if _, _, err := b.AdminCommand(ctx, idc.Cmd, make([]byte, 4096)); !errors.Is(err, ErrNVMeRefused) {
+		t.Fatalf("sata device: %v", err)
+	}
+	if len(fo.admins)+len(fo2.admins) != 0 {
+		t.Fatal("refused command reached the ioctl")
 	}
 }

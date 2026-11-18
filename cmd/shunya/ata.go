@@ -110,6 +110,8 @@ func probeHidden(spec *targetSpec, f wipeFlags, stderr io.Writer) (*engine.Hidde
 	}
 	hp.Before = h
 	hp.SolidState = id.SolidState()
+	san := id.Sanitize
+	hp.Sanitize = &san
 	sec := id.Security
 	hp.Security = &sec
 	if h.Checked {

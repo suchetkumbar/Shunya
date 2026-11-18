@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: Milestone 5 — ATA layer (IDENTIFY, HPA/DCO, Security Erase) implemented. Updated at every milestone.
+> Status: Milestone 6 — NVMe layer, ATA SANITIZE and the method planner implemented. Updated at every milestone.
 
 Shunya is a verifiable secure data-wiping tool (SIH25070). It picks the strongest
 NIST SP 800-88 method each medium supports, wipes it (including hidden areas), verifies
@@ -331,3 +331,94 @@ internal/ata   Command → ATA PASS-THROUGH(16) CDB ─────► Transport
   frozen, attempt counter, power cycle) and sector contents. It can inject faults: no SAT,
   fixed sense, frozen at boot, one SET MAX per power cycle, power loss before any command.
   By default an erase covers only up to the current max, the worst case.
+
+## NVMe layer, ATA SANITIZE and the planner (Milestone 6)
+
+```
+cmd/shunya: plan DEVICE · nvme identify|sanitize-log · wipe --method <firmware method>
+   │ probeNVMe / probeHidden → engine.Recommend → engine.NewFirmwarePlan
+   │ firmwareWipe: markers → erase → done → marker check → pattern verify → HPA policy
+   ▼
+internal/nvme  Command{AdminCmd = struct nvme_passthru_cmd} → Transport.AdminCommand
+internal/ata   SANITIZE DEVICE (B4h) commands + SanitizeOp
+internal/sanitize  Run(Operation): start, poll, journal, resume — shared by NVMe and ATA
+   ▼
+backend.Block.AdminCommand: CheckNVMe allowlist on the raw fields, --execute + TOCTOU
+re-check for Format/Sanitize, NVMe transport only → NVME_IOCTL_ADMIN_CMD (Linux)
+internal/nvme/nvmefake: simulated controller from the lab's recorded QEMU Identify data
+```
+
+- **NVMe commands** (`internal/nvme/cmd.go`):
+  - Identify (CNS 0, 1, 2), Get Log Page 81h (Sanitize Status), Format NVM and Sanitize.
+  - Format NVM uses SES 1 (user data) or 2 (crypto), one namespace only. It repeats the
+    namespace's current LBA format, metadata and protection settings, so nothing changes
+    but the data.
+  - Sanitize does block erase, crypto erase or overwrite, never with auto-restart or
+    no-deallocate.
+  - `AdminCmd` is the kernel's 72-byte struct; a compile-time check pins the size.
+  - Field offsets and bit layouts were cross-checked against libnvme's `types.h` and
+    `ioctl.h` (consulted, not copied).
+- **Parsers** (`identify.go`):
+  - Identify Controller: VID, serial, model, firmware, OUI, CMIC, version, OACS, TNVMCAP,
+    SANICAP, NN, FNA, SubNQN.
+  - Identify Namespace: sizes, LBA formats including the 6-bit format index, metadata, PI,
+    NMIC, DLFEAT (what deallocated blocks read as), EUI-64, NGUID.
+  - Also the active NSID list and the Sanitize Status log (progress, status, Global Data
+    Erased, last CDW10, time estimates).
+  - Tested field by field against nvme-cli's decoded output of the same QEMU drive, and fuzzed.
+- **Refusals** (`ops.go`):
+  - Sanitize always acts on the whole subsystem. A Format whose FNA says it applies to all
+    namespaces does too. Shunya refuses either when the controller has more than one active
+    namespace, or when the subsystem has several controllers (CMIC bit 1).
+  - Crypto Format needs FNA bit 2. QEMU completes SES=2 "successfully" with FNA = 0;
+    Shunya trusts the capability bit, not the status.
+- **ATA SANITIZE** (`internal/ata/sanitize.go`):
+  - CRYPTO SCRAMBLE, BLOCK ERASE and OVERWRITE EXT, each with its ACS key in the LBA field.
+  - SANITIZE STATUS EXT reports progress, completion, failure (ABRT) and the
+    sanitize-frozen state, which Shunya explains and refuses.
+  - FREEZE LOCK and ANTIFREEZE can't be built; `CheckATA` refuses them, wrong keys and
+    the failure-mode bit.
+- **Shared sanitize loop** (`internal/sanitize`):
+  - Records `sanitize-started` before sending the start command, then polls (5 s) and
+    records progress every 10 % or 5 minutes.
+  - On resume:
+    - **Still running:** wait, never start a second one.
+    - **Completed and attested:** stop. Attested means the drive reports Global Data Erased
+      (nothing written since a successful sanitize) and its last sanitize used this action.
+    - **Anything else:** sanitize again. A "completed" status may be an earlier sanitize's;
+      ATA has no attestation, so ATA always sanitizes again.
+  - A sanitize this journal didn't start is refused. A failure is reported, with the
+    drive's failure mode explained.
+- **Markers** (`engine/markers.go`): before any firmware erase, 1024 sectors are
+  overwritten with HMAC-SHA256(key, "shunya-marker-v1" ‖ LBA) blocks.
+  - Positions come from `SamplePositions` with a random seed and the fingerprint; the
+    first and last sector are always included.
+  - Afterwards `CheckMarkers` requires that none still reads back. This is the only content
+    check possible after a crypto erase.
+  - The result is a `verified` record with mode `markers`.
+- **Plans** (`engine/firmware.go`):
+  - `NewFirmwarePlan` covers all ten firmware methods (the ATA Security Erase pair now
+    goes through it too).
+  - **Level:** virtual → Clear. ATA Security Erase → Purge only on a real rotating disk.
+    Sanitize and NVMe Format with secure erase → Purge. A Purge claim elsewhere fails
+    validation.
+  - **Expected pattern:** zeros after a normal Security Erase or an overwrite sanitize.
+    After a block erase or user-data Format, whatever DLFEAT says deallocated blocks read
+    as. Crypto: none.
+  - Validation re-checks support against the capabilities recorded in the plan.
+- **Journal:** `firmware` records hold `markers-planted`, `format-started/-completed` and
+  the sanitize events. Replay rejects:
+  - an erase event before the markers are planted
+  - an event of the wrong kind
+  - `done` before the drive reported completion, or without the markers planted
+- **Planner** (`engine/recommend.go`, `shunya plan`):
+  - Lists every method in preference order, with level, availability and the reason.
+  - NVMe: Sanitize crypto > block > Format crypto > Format user data > Sanitize overwrite
+    > overwrite.
+  - ATA: Sanitize crypto > block > overwrite > Security Erase enhanced > normal > overwrite.
+  - Best is the first available Purge method, else the strongest Clear method.
+  - It only recommends; `--method` stays explicit (the one-click mode, M9, may apply it).
+- **Virtual machines** (`device.markHypervisor`, found in the M6 lab run): when DMI says
+  the machine is a VM, every physical-looking disk is treated as emulated. The lab's SATA
+  disks have custom model strings and looked physical before. A passed-through disk is
+  under-claimed, never over-claimed.

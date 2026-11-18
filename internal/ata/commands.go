@@ -164,3 +164,49 @@ func SecurityDisableUserPassword(pw string) (Command, []byte, error) {
 	b, err := passwordBlock(0, pw)
 	return securityCmd("SECURITY DISABLE PASSWORD (user)", CmdSecurityDisablePass, defaultTimeout), b, err
 }
+
+// SANITIZE DEVICE (B4h, ACS-3 §7.36), 48-bit non-data. The subcommand is the FEATURE
+// field; each erase carries a fixed key in the LBA field so a stray command can't start
+// one. Never built: SANITIZE FREEZE LOCK EXT (0020h, lasts until power-off) and
+// SANITIZE ANTIFREEZE LOCK EXT (0040h).
+const (
+	CmdSanitizeDevice = 0xb4
+
+	SanitizeStatusExt    = 0x0000
+	SanitizeCryptoExt    = 0x0011
+	SanitizeBlockEraseEx = 0x0012
+	SanitizeOverwriteExt = 0x0014
+
+	keyCrypto    = 0x43727970 // "Cryp"
+	keyBlock     = 0x426b4572 // "BkEr"
+	keyOverwrite = 0x00004f57 // "OW" in LBA 47:32
+)
+
+// SanitizeStatus is SANITIZE STATUS EXT: the registers report progress and state.
+func SanitizeStatus() Command {
+	return Command{Name: "SANITIZE STATUS EXT", TF: Taskfile{Feature: SanitizeStatusExt, Device: deviceLBA, Command: CmdSanitizeDevice},
+		Proto: ProtoNonData, Dir: DirNone, Ext: true, Timeout: defaultTimeout}
+}
+
+// SanitizeCryptoScramble is CRYPTO SCRAMBLE EXT (failure mode bit clear).
+func SanitizeCryptoScramble() Command {
+	return Command{Name: "SANITIZE CRYPTO SCRAMBLE EXT", TF: Taskfile{Feature: SanitizeCryptoExt, LBA: keyCrypto, Device: deviceLBA, Command: CmdSanitizeDevice},
+		Proto: ProtoNonData, Dir: DirNone, Ext: true, Timeout: defaultTimeout}
+}
+
+// SanitizeBlockErase is BLOCK ERASE EXT.
+func SanitizeBlockErase() Command {
+	return Command{Name: "SANITIZE BLOCK ERASE EXT", TF: Taskfile{Feature: SanitizeBlockEraseEx, LBA: keyBlock, Device: deviceLBA, Command: CmdSanitizeDevice},
+		Proto: ProtoNonData, Dir: DirNone, Ext: true, Timeout: defaultTimeout}
+}
+
+// SanitizeOverwrite is OVERWRITE EXT with passes (1–16) of the 32-bit pattern, no
+// inversion between passes.
+func SanitizeOverwrite(passes int, pattern uint32) (Command, error) {
+	if passes < 1 || passes > 16 {
+		return Command{}, fmt.Errorf("ATA sanitize overwrite: %d passes (1–16)", passes)
+	}
+	return Command{Name: "SANITIZE OVERWRITE EXT", TF: Taskfile{Feature: SanitizeOverwriteExt, Count: uint16(passes & 0xf),
+		LBA: keyOverwrite<<32 | uint64(pattern), Device: deviceLBA, Command: CmdSanitizeDevice},
+		Proto: ProtoNonData, Dir: DirNone, Ext: true, Timeout: defaultTimeout}, nil
+}

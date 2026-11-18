@@ -78,3 +78,45 @@ func TestCheckATAStrayTransferBits(t *testing.T) {
 		}
 	}
 }
+
+// DCO subcommands other than IDENTIFY are refused even when shaped exactly like IDENTIFY
+// (PIO data-in, one block): only the feature byte differs.
+func TestCheckATADCOSubcommands(t *testing.T) {
+	for _, feat := range []byte{0xc0, 0xc1, 0xc3, 0x00} {
+		if _, err := CheckATA(cdb(4, false, pioIn, feat, 1, 0xb1), make([]byte, 512)); !errors.Is(err, ErrATARefused) {
+			t.Errorf("DCO feature %#02x accepted", feat)
+		}
+	}
+	if _, err := CheckATA(cdb(4, false, pioIn, 0xc2, 1, 0xb1), make([]byte, 512)); err != nil {
+		t.Errorf("DCO IDENTIFY refused: %v", err)
+	}
+}
+
+func TestCheckATASanitize(t *testing.T) {
+	mk := func(feat uint16, lba uint64, count byte) [16]byte {
+		c := cdb(3, true, nonData, byte(feat), count, 0xb4)
+		c[3] = byte(feat >> 8)
+		c[8], c[10], c[12], c[7], c[9], c[11] = byte(lba), byte(lba>>8), byte(lba>>16), byte(lba>>24), byte(lba>>32), byte(lba>>40)
+		return c
+	}
+	for name, tc := range map[string]struct {
+		c   [16]byte
+		ok  bool
+		mut bool
+	}{
+		"status":                {mk(0, 0, 0), true, false},
+		"status clear failure":  {mk(0, 0, 1), false, false},
+		"crypto":                {mk(0x11, 0x43727970, 0), true, true},
+		"crypto wrong key":      {mk(0x11, 0x12345678, 0), false, false},
+		"block":                 {mk(0x12, 0x426b4572, 0), true, true},
+		"overwrite":             {mk(0x14, 0x4f57_00000000, 1), true, true},
+		"overwrite failure bit": {mk(0x14, 0x4f57_00000000, 0x11), false, false},
+		"freeze lock":           {mk(0x20, 0x46724c6b, 0), false, false},
+		"antifreeze":            {mk(0x40, 0x416e7469, 0), false, false},
+	} {
+		c, err := CheckATA(tc.c, nil)
+		if (err == nil) != tc.ok || (tc.ok && c.Mutating != tc.mut) {
+			t.Errorf("%s: %+v %v", name, c, err)
+		}
+	}
+}

@@ -36,3 +36,13 @@ the file carver) and `exfatprogs`, used by the canary harness (`lab/tests`). Eac
 installed from the Alpine repositories inside the VM by `lab.sh`. `foremost` is not packaged
 for Alpine 3.24. Shunya itself issues these commands
 from Go (brief §4).
+
+## Milestones 5–6: no new modules
+The ATA and NVMe layers use only the standard library and `golang.org/x/sys/unix`. For
+reference only (not vendored, not linked), the specifications were cross-checked against:
+- ATA: hdparm's and sg3_utils' published CDBs and IDENTIFY decoding.
+- NVMe: libnvme (`linux-nvme/libnvme`, LGPL-2.1) `src/nvme/types.h` and `ioctl.h` (struct
+  layouts, bit fields, status codes).
+
+The test data are public IDENTIFY dumps (cited in `internal/ata/testdata/identify/SOURCES.md`)
+and data recorded from the lab's QEMU drives (`internal/nvme/testdata/SOURCES.md`).

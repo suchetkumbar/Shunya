@@ -9,10 +9,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"shunya/internal/ata"
 	"shunya/internal/ata/atafake"
 	"shunya/internal/backend"
+	"shunya/internal/sanitize"
 )
 
 // Scenario tests against the simulated drive (pending-real-hardware: QEMU emulates no
@@ -455,5 +457,112 @@ func TestNewPasswordAndTimeout(t *testing.T) {
 	}
 	if got := ata.EraseTimeout(id, true).Hours(); got != 24 {
 		t.Errorf("unknown-length timeout %v h", got)
+	}
+}
+
+// Firmware that leaves the password set after the erase: Shunya disables it and checks.
+func TestSecureErasePasswordLeftSet(t *testing.T) {
+	d, dev := drive(t, atafake.Options{Sectors: 100, Security: true, EraseKeepsPassword: true})
+	var st steps
+	after, err := ata.SecureErase(ctx, dev, ata.EraseOptions{Password: "pw", Record: st.record})
+	if err != nil || after.Enabled || !slices.Contains(st.names(), ata.StepDisable) {
+		t.Fatalf("%v %+v %v", err, after, st.names())
+	}
+	if _, en, _, _ := d.State(); en {
+		t.Fatal("password still set")
+	}
+	// If even DISABLE PASSWORD doesn't take, the erase fails loudly instead of reporting success.
+	_, dev = drive(t, atafake.Options{Sectors: 100, Security: true, EraseKeepsPassword: true, IgnoreDisable: true})
+	st = steps{}
+	if _, err := ata.SecureErase(ctx, dev, ata.EraseOptions{Password: "pw", Record: st.record}); !errors.Is(err, ata.ErrStillEnabled) {
+		t.Fatalf("%v", err)
+	}
+	if slices.Contains(st.names(), ata.StepChecked) {
+		t.Fatal("security-checked journaled although the password is still set")
+	}
+}
+
+func TestATASanitize(t *testing.T) {
+	tests := []struct {
+		method string
+		fill   byte
+	}{{ata.SanitizeMethodCrypto, 0xc5}, {ata.SanitizeMethodBlock, 0xff}, {ata.SanitizeMethodOverwrite, 0x00}}
+	for _, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			d, dev := drive(t, atafake.Options{Sectors: 1000, NativeSectors: 1100, SanitizeCrypto: true, SanitizeBlock: true, SanitizeOverwrite: true, SanitizePolls: 3})
+			plant(d, dev, t)
+			id := identify(t, dev)
+			if err := ata.CheckSanitize(ctx, dev, id, tc.method); err != nil {
+				t.Fatal(err)
+			}
+			op := ata.SanitizeOp{D: dev, Method: tc.method, Passes: 1}
+			var got []sanitize.Event
+			st, err := sanitize.Run(ctx, op, sanitize.Options{Record: func(e sanitize.Event) error { got = append(got, e); return nil },
+				Sleep: func(context.Context, time.Duration) error { return nil }})
+			if err != nil || st.Phase != sanitize.Completed || st.Attested {
+				t.Fatalf("%v %+v", err, st)
+			}
+			// The whole native range, HPA included, is sanitized.
+			for _, lba := range []uint64{0, 999, 1099} {
+				if !bytes.Equal(d.Sector(lba), bytes.Repeat([]byte{tc.fill}, 512)) {
+					t.Fatalf("sector %d: % x", lba, d.Sector(lba)[:8])
+				}
+			}
+			if got[0].Event != sanitize.EvStarted || got[len(got)-1].Event != sanitize.EvCompleted {
+				t.Fatalf("%v", got)
+			}
+		})
+	}
+}
+
+func TestATASanitizeRefusalsAndFailure(t *testing.T) {
+	_, dev := drive(t, atafake.Options{Sectors: 100})
+	if err := ata.CheckSanitize(ctx, dev, identify(t, dev), ata.SanitizeMethodBlock); err == nil || !strings.Contains(err.Error(), "word 59 bit 12") {
+		t.Fatalf("unsupported: %v", err)
+	}
+	_, dev = drive(t, atafake.Options{Sectors: 100, SanitizeBlock: true})
+	if err := ata.CheckSanitize(ctx, dev, identify(t, dev), ata.SanitizeMethodCrypto); err == nil || !strings.Contains(err.Error(), "CRYPTO SCRAMBLE not supported") {
+		t.Fatalf("crypto: %v", err)
+	}
+	_, dev = drive(t, atafake.Options{Sectors: 100, SanitizeBlock: true, SanitizeFrozen: true})
+	if err := ata.CheckSanitize(ctx, dev, identify(t, dev), ata.SanitizeMethodBlock); err == nil || !strings.Contains(err.Error(), "Sanitize FROZEN") {
+		t.Fatalf("frozen: %v", err)
+	}
+	d, dev := drive(t, atafake.Options{Sectors: 100, SanitizeBlock: true, SanitizeFails: true})
+	_, err := sanitize.Run(ctx, ata.SanitizeOp{D: dev, Method: ata.SanitizeMethodBlock}, sanitize.Options{Record: func(sanitize.Event) error { return nil },
+		Sleep: func(context.Context, time.Duration) error { return nil }})
+	if !errors.Is(err, sanitize.ErrFailed) || d.Sanitizes != 1 {
+		t.Fatalf("%v", err)
+	}
+	// While a sanitize runs the drive refuses other I/O.
+	_, dev = drive(t, atafake.Options{Sectors: 100, SanitizeBlock: true, SanitizePolls: 5})
+	ata.SanitizeOp{D: dev, Method: ata.SanitizeMethodBlock}.Start(ctx)
+	r, _ := ata.ReadDMAExt(0, 1)
+	if _, err := dev.Exec(ctx, r, make([]byte, 512)); !ata.Aborted(err) {
+		t.Fatalf("read during sanitize: %v", err)
+	}
+}
+
+func TestATASanitizeCommandKeys(t *testing.T) {
+	ow, _ := ata.SanitizeOverwrite(16, 0x01020304)
+	for _, tc := range []struct {
+		c    ata.Command
+		feat uint16
+		lba  uint64
+	}{
+		{ata.SanitizeCryptoScramble(), 0x0011, 0x43727970},
+		{ata.SanitizeBlockErase(), 0x0012, 0x426b4572},
+		{ow, 0x0014, 0x4f57_01020304},
+		{ata.SanitizeStatus(), 0x0000, 0},
+	} {
+		if tc.c.TF.Feature != tc.feat || tc.c.TF.LBA != tc.lba || tc.c.TF.Command != 0xb4 || !tc.c.Ext {
+			t.Errorf("%s: %+v", tc.c.Name, tc.c.TF)
+		}
+	}
+	if ow.TF.Count != 0 { // 16 passes encode as 0
+		t.Errorf("count %d", ow.TF.Count)
+	}
+	if _, err := ata.SanitizeOverwrite(0, 0); err == nil {
+		t.Error("0 passes accepted")
 	}
 }

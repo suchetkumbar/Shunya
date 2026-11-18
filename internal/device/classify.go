@@ -99,3 +99,28 @@ func boolDigit(b bool) string {
 }
 
 func quote(s string) string { return "\"" + s + "\"" }
+
+// hypervisorHint returns a reason if the machine itself is a virtual machine (DMI
+// system vendor/product).
+func hypervisorHint(s System) string {
+	id := strings.ToUpper(s.DMIVendor + " " + s.DMIProduct)
+	for _, h := range []string{"QEMU", "KVM", "BOCHS", "VMWARE", "VIRTUALBOX", "INNOTEK", "XEN", "PARALLELS", "MICROSOFT CORPORATION VIRTUAL MACHINE", "AMAZON EC2", "GOOGLE COMPUTE ENGINE"} {
+		if strings.Contains(id, h) {
+			return "the machine is a virtual machine (DMI " + quote(strings.TrimSpace(s.DMIVendor+" "+s.DMIProduct)) + "): its disks are treated as emulated, even with a physical-looking identity (a passed-through disk is under-claimed, never over-claimed)"
+		}
+	}
+	return ""
+}
+
+// markHypervisor marks every physical-looking device of a virtual machine as virtual.
+// Identity strings alone miss emulated disks given custom models (the lab's SATA disks
+// are "SHUNYA LAB SATA …"), and an emulated disk must never earn a Purge claim.
+func markHypervisor(d *Device, s System) {
+	if d.Media.Virtual || d.Media.Type == MediaLogical {
+		return
+	}
+	if h := hypervisorHint(s); h != "" {
+		d.Media.Virtual = true
+		d.Media.Reasons = append(d.Media.Reasons, h)
+	}
+}

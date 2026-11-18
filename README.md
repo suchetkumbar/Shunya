@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 5 (ATA layer).** `shunya wipe` overwrites a disk or image (NIST Clear) — including a SATA drive's Host Protected Area — or runs an ATA Security Erase (Purge on hard disks) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
+> **Status: Milestone 6 (NVMe layer and planner).** `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -67,6 +67,19 @@ shunya ata unlock --execute --journal J --key K        # recover a drive left lo
 - **DCO:** detected and disclosed, never changed (that would be permanent).
 - **Security Erase:** a temporary password is set (journalled first), then ERASE UNIT runs and Shunya checks the password is gone. It counts as Purge on a real rotating disk and as Clear on flash. A normal erase can be verified for zeros; an enhanced one can't.
 - **Testing:** the lab's QEMU drives answer IDENTIFY but emulate no HPA, DCO or Security, so those are tested against a simulated drive built from real IDENTIFY dumps and stay *pending real hardware*.
+
+### NVMe, ATA SANITIZE and the planner (Milestone 6)
+```sh
+shunya plan /dev/nvme0n1                     # every method, its level, availability and why; the recommendation
+shunya nvme identify /dev/nvme0n1            # controller + namespace (read-only); --ctrl FILE parses saved data
+shunya wipe --method nvme-sanitize-crypto-erase /dev/nvme0n1   # dry run; add --execute --journal J --key K
+```
+- **Methods:** `nvme-sanitize-{crypto-erase,block-erase,overwrite}`, `nvme-format-{crypto,user-data}-erase`, `ata-sanitize-{crypto-scramble,block-erase,overwrite}`, plus the M5 ATA Security Erase pair and `overwrite`.
+- **Purge** for Sanitize and NVMe Format with secure erase on real media; Clear on virtual disks. Methods are offered only when the drive advertises them.
+- **Markers:** before any firmware erase, 1024 HMAC-tagged sectors are planted; afterwards none may read back. That is the only content check possible after a crypto erase.
+- **Sanitize** runs inside the drive: Shunya polls and journals it, and a resume after a crash waits for it rather than starting a second one.
+- **Refusals:** if the erase would hit other namespaces or a multi-controller subsystem.
+- **Testing:** the lab ran a real Format NVM on QEMU. QEMU has no Sanitize, so that is tested against a simulated controller and is *pending real hardware*.
 
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):

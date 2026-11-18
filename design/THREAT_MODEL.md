@@ -39,6 +39,11 @@
 | T24 | An interrupted erase certified as complete | M5: resume never infers completion from the security state (a disabled password could be an operator's doing); it erases again. Normal erase can be read back for zeros | mitigated (M5) |
 | T25 | Temporary password in the journal | It only unlocks this drive until the erase finishes, after which it is invalid; it is in the journal on purpose (T23). Protect the journal as you would the drive | accepted (by design) |
 | T26 | ATA commands reach a different drive than the one selected (USB bridge, wrong path) | M5: IDENTIFY serial/model/WWN and size must match sysfs; behind USB, where they cannot be tied together, ATA is not used | mitigated (M5) |
+| T27 | Sanitize or Format erases other namespaces or another host's data | M6: refused unless the target is the only active namespace on a single-controller subsystem (CMIC bit 1, active NSID list, FNA bits 0–1) | mitigated (M6) |
+| T28 | A drive claims an erase it can't do (QEMU completes crypto Format with FNA = 0) | M6: methods are offered and planned only from advertised capability bits; validation re-checks them | mitigated (M6) |
+| T29 | An interrupted or earlier sanitize is certified | M6: resume waits for a sanitize still running; a completed one is accepted only when the NVMe controller attests Global Data Erased for the same action; otherwise (and always for ATA) it sanitizes again. Markers planted before the erase must all be gone | mitigated (M6, pending-real-hardware) |
+| T30 | Firmware erase result can't be read back (crypto erase) | M6: 1024 HMAC markers at unpredictable positions must not survive; that shows the erase changed what the host reads, not that spare blocks were reached | partial (by design) |
+| T31 | Emulated disk with a physical-looking identity earns Purge | M6: DMI hypervisor detection marks every disk of a VM virtual; found and fixed in the M6 lab run | mitigated (M6) |
 
 ## Out of scope
 - Physical destruction (NIST "Destroy").
@@ -57,3 +62,7 @@
   checks what it can: the security state before and after, and zeros after a normal erase.
   It cannot check a vendor pattern, spare-area coverage or a key change. That is why flash
   stays at Clear, and why everything ATA-specific beyond IDENTIFY is pending real hardware.
+- **M6: what markers prove.** After a firmware erase, markers show the sectors the host
+  reads changed. They do not show that over-provisioned blocks were erased or that a key
+  was destroyed. That rests on the drive's capability bits and SP 800-88's acceptance of
+  the command. That is why Sanitize stays pending real hardware.

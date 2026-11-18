@@ -71,6 +71,14 @@ machine Shunya runs on. They override every other requirement.
 22. **Frozen drives are refused, not worked around.** The suspend-to-RAM and hot-plug workarounds act on the whole machine; Shunya explains them and leaves them to the operator.
 23. **Simulated drive only for HPA/DCO/Security.** QEMU emulates none of them; everything proven only against `atafake` is labelled pending-real-hardware (design/LAB_CAPABILITIES.md). No real drive was sent a Security or SET MAX command during development.
 
+### Milestone 6 additions (`internal/nvme`, `internal/sanitize`, `backend.CheckNVMe`)
+24. **NVMe allowlist on the raw fields.** `Block.AdminCommand` accepts only Identify (CNS 0/1/2), the Sanitize Status log, Format NVM with SES 1 or 2 on one namespace, and Sanitize (block/overwrite/crypto, no auto-restart, no no-deallocate). Firmware download/commit, namespace management/attachment, Set Features, Security Send, Exit Failure Mode and vendor commands are refused; caller-set addresses or metadata are refused. Format and Sanitize need `--execute` and pass the TOCTOU re-check; only NVMe devices are addressed.
+25. **No collateral erase.** Sanitize, and a Format whose FNA says it reaches all namespaces, are refused unless the target is the controller's only active namespace on a single-controller subsystem.
+26. **ATA SANITIZE: no freeze or antifreeze.** SANITIZE FREEZE LOCK and ANTIFREEZE LOCK cannot be built and are refused by `CheckATA`, as are wrong erase keys and the failure-mode bit. A sanitize-frozen drive is explained, not worked around.
+27. **Capabilities, not command status.** A method is offered only when the drive advertises it (SANICAP, FNA, IDENTIFY word 59). QEMU accepts a crypto Format with FNA = 0; Shunya refuses it.
+28. **Virtual machine → virtual disks.** If DMI says the machine is a VM, every disk is treated as emulated (never Purge), whatever its model string says.
+29. **One real firmware erase in the lab, none on the host.** The lab ran Format NVM (user data erase) on the QEMU NVMe target only. Sanitize (NVMe and ATA) is proven against the simulated drives only (pending-real-hardware).
+
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is
 treated as outside its intent. `/dev/urandom` is no longer read: the lab token comes

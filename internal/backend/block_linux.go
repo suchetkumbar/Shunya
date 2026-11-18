@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"shunya/internal/device"
+	"shunya/internal/nvme"
 	"shunya/internal/sysfs"
 )
 
@@ -26,13 +27,14 @@ type probeInfo struct {
 // blockOps are the system calls BlockBackend makes. Tests replace them so guard logic
 // runs on the development host without any device node being opened.
 type blockOps struct {
-	open    func(path string, flags int) (*os.File, error)
-	probe   func(f *os.File) (probeInfo, error)
-	discard func(f *os.File, off, length uint64) error
-	sgio    func(f *os.File, cdb [16]byte, dir int, data []byte, timeout time.Duration) ([]byte, error)
+	open      func(path string, flags int) (*os.File, error)
+	probe     func(f *os.File) (probeInfo, error)
+	discard   func(f *os.File, off, length uint64) error
+	sgio      func(f *os.File, cdb [16]byte, dir int, data []byte, timeout time.Duration) ([]byte, error)
+	nvmeAdmin func(f *os.File, c nvme.AdminCmd, data []byte) (uint32, nvme.Status, error)
 }
 
-var liveOps = blockOps{open: sysOpen, probe: sysProbe, discard: sysDiscard, sgio: sysSGIO}
+var liveOps = blockOps{open: sysOpen, probe: sysProbe, discard: sysDiscard, sgio: sysSGIO, nvmeAdmin: sysNVMeAdmin}
 
 // Block is the BlockBackend: a whole block device opened exclusively.
 type Block struct {
@@ -346,4 +348,32 @@ func (b *Block) PassThrough(ctx context.Context, cdb [16]byte, data []byte, time
 		}
 	}
 	return b.ops.sgio(b.f, cdb, c.dir, data, timeout)
+}
+
+// AdminCommand sends one NVMe admin command with NVME_IOCTL_ADMIN_CMD on the namespace
+// block device (it implements nvme.Transport). The command must pass CheckNVMe;
+// Format and Sanitize need Options.Execute and pass the TOCTOU re-check. Only NVMe
+// devices are addressed.
+func (b *Block) AdminCommand(ctx context.Context, c nvme.AdminCmd, data []byte) (uint32, nvme.Status, error) {
+	k, err := CheckNVMe(c, data)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.dead != nil {
+		return 0, 0, b.dead
+	}
+	if b.selected.Transport != device.TransportNVMe {
+		return 0, 0, fmt.Errorf("%w: %s is a %s device, not NVMe", ErrNVMeRefused, b.path, b.selected.Transport)
+	}
+	if k.Mutating {
+		if err := b.beforeWrite(); err != nil {
+			return 0, 0, err
+		}
+	}
+	return b.ops.nvmeAdmin(b.f, c, data)
 }
