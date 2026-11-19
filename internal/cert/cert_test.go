@@ -224,7 +224,8 @@ func TestDevKey(t *testing.T) {
 func TestSemanticChecks(t *testing.T) {
 	f := newFixture(t)
 	for name, edit := range map[string]func(*Certificate){
-		"purge by overwrite": func(c *Certificate) { c.Erasure.NISTLevel = "purge" },
+		"purge by overwrite": func(c *Certificate) { c.Erasure.NISTLevel = "purge"; c.Device.Virtual = false }, // physical disk: only the overwrite rule applies
+		"purge on virtual":   func(c *Certificate) { c.Erasure.Method = "nvme-format-user-data-erase"; c.Erasure.NISTLevel = "purge" },
 		"unknown level":      func(c *Certificate) { c.Erasure.NISTLevel = "destroy" },
 		"failed check":       func(c *Certificate) { c.Verification[1].OK = false },
 		"no verification":    func(c *Certificate) { c.Verification = []Verification{} },
@@ -288,6 +289,11 @@ func TestStrictEnvelope(t *testing.T) {
 	}
 	if _, err := Verify(bytes.Repeat([]byte(" "), MaxBytes+1), f.policy()); err == nil {
 		t.Error("oversized input accepted")
+	}
+	// Same JSON meaning, not canonical: refused as such (before any other check).
+	spaced := bytes.Replace(f.signed, []byte(`{"certificate":`), []byte(`{ "certificate":`), 1)
+	if _, err := Verify(spaced, f.policy()); !errors.Is(err, ErrNotCanonical) {
+		t.Errorf("whitespace: %v", err)
 	}
 }
 

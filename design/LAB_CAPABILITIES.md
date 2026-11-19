@@ -93,6 +93,7 @@ These stay `pending-real-hardware` until the final real-hardware step (see desig
 | M6 | `shunya nvme identify` over NVME_IOCTL_ADMIN_CMD: serial, model, size match sysfs; SANICAP 0, FNA 0, DLFEAT zeros as recorded; raw data saved and parsed back | NVMe |
 | M6 | Real **Format NVM user data erase** through the guarded backend: 1024 markers planted, format, full read-back of zeros (DLFEAT), markers gone; level Clear (virtual) | NVMe |
 | M6 | Refusals: crypto Format (FNA bit 2 clear, although QEMU would complete it), all three NVMe Sanitize actions (SANICAP 0), the Sanitize Status log (Invalid Field 0x4002), ATA SANITIZE on the SATA disks (not advertised); `shunya plan` on all five targets: every option Clear (virtual), recommendations NVMe → Format user data, others → overwrite | all five targets |
+| M7 | `TestLabCertificate`: root initialised, station certified, real Format NVM wipe with `--station-cert` → certificate + PDF; the separate `shunya-verify` binary verifies it offline including `--pdf`; `qpdf --check` clean; `pdftotext` shows the ID, serial, method, level and station; `pdftoppm` → `zbarimg` decodes the QR code to exactly `verify_url + ID`; after `keys revoke --reason compromised` the same certificate fails | NVMe |
 
 ### Forensic tools in the lab VM (M4)
 | Tool | Status |
@@ -100,3 +101,15 @@ These stay `pending-real-hardware` until the final real-hardware step (see desig
 | photorec (testdisk 7.2, Alpine community) | ✅ installed by `lab.sh`; carves JPEG, PDF and DOCX byte-identical from ext4, FAT32 and exFAT, including deleted files |
 | foremost | ❌ not packaged for Alpine 3.24 (main/community); photorec is the only carver. Honest gap: a second, independent carver would strengthen the result |
 | exFAT, FAT32, ext4 | ✅ `exfatprogs`, `dosfstools`, `e2fsprogs`; kernel `exfat` and `vfat` modules present |
+
+### PDF and QR checkers in the lab VM (M7)
+| Tool | Status |
+|---|---|
+| qpdf 12.3.2 | ✅ structure check of the certificate PDF |
+| poppler-utils 25.12.0 (pdftotext, pdftoppm) | ✅ text extraction; rendering at 200 dpi, grey |
+| zbar 0.23.93 (zbarimg) | ✅ decodes the rendered QR code. Needs Alpine's `imagemagick` package for its image coders (`imagemagick-libs` alone has none, so PNG and PGM failed with "NoDecodeDelegate"). It prints D-Bus warnings on stderr in the VM; the test reads stdout only. |
+
+Together these add 46 MiB (57 packages) to the VM's boot disk. Nothing is installed on the host.
+`lab.sh test` takes an optional `LAB_RUN` regexp, which the M7 run used to split the
+suite into two foreground halves (all tests except the canary harness, then the harness)
+so that neither exceeds 10 minutes.

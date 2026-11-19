@@ -221,7 +221,8 @@ cmd_test() {
   cmd_run "$w/shunya guard /dev/vda | tee $w/results/guard-vda.txt; $w/shunya guard /dev/nvme0n1 | tee $w/results/guard-nvme0n1.txt; true"
   cmd_push "$bin/backend.test" "$w/backend.test"
   log "running backend lab tests as root (writes to TARGET disks only)"
-  cmd_run "cd $w && SHUNYA_LAB=1 ./backend.test -test.v -test.count=1 -test.timeout=45m > results/backend-lab.txt 2>&1; echo \$? > results/backend-lab.rc"
+  # LAB_RUN (optional) selects tests by name, e.g. to split a long run into parts.
+  cmd_run "cd $w && SHUNYA_LAB=1 ./backend.test -test.v -test.count=1 -test.timeout=45m ${LAB_RUN:+-test.run='$LAB_RUN'} > results/backend-lab.txt 2>&1; echo \$? > results/backend-lab.rc"
   if [ "${PROBE:-0}" = 1 ]; then
     cmd_push "$LAB_DIR/probe/probe.sh" "$w/probe.sh"
     log "running capability probe in VM (destructive to TARGET disks only)"

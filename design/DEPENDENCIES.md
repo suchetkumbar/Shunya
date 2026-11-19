@@ -57,4 +57,5 @@ single external module family. Key derivation and encryption use the standard li
 needed.
 
 Lab VM packages added in M7, used only by `TestLabCertificate` to check Shunya's PDF and
-QR output independently: `qpdf`, `poppler-utils` (pdftotext, pdftoppm), `zbar` (zbarimg).
+QR output independently: `qpdf`, `poppler-utils` (pdftotext, pdftoppm), `zbar` (zbarimg)
+and `imagemagick`, whose image coders zbarimg needs (VM only, 46 MiB in all).

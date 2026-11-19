@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -66,6 +67,16 @@ func TestRootKeyFile(t *testing.T) {
 	var f rootFile
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
+	}
+	// The header is bound as additional data: the ciphertext does not open without it.
+	g, err := f.aead(pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, _ := base64.StdEncoding.DecodeString(f.Nonce)
+	ct, _ := base64.StdEncoding.DecodeString(f.Ciphertext)
+	if _, err := g.Open(nil, nonce, ct, nil); err == nil {
+		t.Error("ciphertext opens without the header as AAD")
 	}
 	other, _ := newRoot(t)
 	for name, edit := range map[string]func(*rootFile){
@@ -143,7 +154,7 @@ func TestStationCertificate(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	other, _ := newRoot(t)
-	if err := c.Verify(other); err == nil {
+	if err := c.Verify(other); err == nil || !strings.Contains(err.Error(), "not by root") {
 		t.Error("verified under another root")
 	}
 	for name, edit := range map[string]func(*StationCert){
@@ -170,6 +181,11 @@ func TestStationCertificate(t *testing.T) {
 	b2, _ := json.Marshal(m)
 	if _, err := ParseStationCert(b2, rpub); err == nil {
 		t.Error("unknown member accepted")
+	}
+	// encoding/json matches member names case-insensitively: "Station" must not pass
+	// for "station" (the signature covers the bytes as written).
+	if _, err := ParseStationCert(bytes.Replace(b, []byte(`"station":`), []byte(`"Station":`), 1), rpub); err == nil {
+		t.Error("case-changed member name accepted")
 	}
 	if !c.ValidAt(t0) || !c.ValidAt(t0.AddDate(0, 6, 0)) || c.ValidAt(t0.Add(-time.Second)) || c.ValidAt(t0.AddDate(1, 0, 1)) {
 		t.Error("ValidAt")

@@ -86,8 +86,15 @@ func TestLabCertificate(t *testing.T) {
 		}
 	}
 	png := filepath.Join(dir, "page")
-	tool(t, "pdftoppm", "-r", "200", "-png", "-f", "1", "-l", "1", "-singlefile", cp, png)
-	qr := strings.TrimSpace(tool(t, "zbarimg", "--raw", "-q", png+".png"))
+	// PGM, not PNG: Alpine's ImageMagick (zbarimg's image reader) lacks the PNG coder,
+	// while PNM is built in.
+	tool(t, "pdftoppm", "-r", "200", "-gray", "-f", "1", "-l", "1", "-singlefile", cp, png)
+	// stdout only: zbarimg warns about D-Bus on stderr in the VM.
+	zout, err := exec.Command("zbarimg", "--raw", "-q", png+".pgm").Output()
+	if err != nil {
+		t.Fatalf("zbarimg: %v", err)
+	}
+	qr := strings.TrimSpace(string(zout))
 	if qr != v.Cert.VerifyURL+v.ID {
 		t.Fatalf("zbarimg decoded %q, want %q", qr, v.Cert.VerifyURL+v.ID)
 	}
