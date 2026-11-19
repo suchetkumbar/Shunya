@@ -175,3 +175,42 @@ shunya-verify --root root.pub --revocations revocations.json [--pdf cert.pdf] [-
 - Works offline. It never opens a device.
 - Exit codes: 0 valid, 1 invalid, 2 usage.
 - `shunya cert show` runs the same check (`internal/certcheck`).
+
+## Batch manifests (Milestone 9)
+
+Fleet mode and the TUI sign one manifest per batch: `batch-<batch_id>.manifest.json` in the
+journal directory (`internal/manifest`).
+
+**Form:** the same as a certificate.
+- The file is RFC 8785 canonical JSON plus a newline:
+  `{"log": null | inclusion, "manifest": {...}, "signature": "..."}`.
+- The signature is Ed25519, over the canonical body, with context
+  `shunya/batch-manifest/v1`.
+- It is signed by the station key that signed the batch's certificates.
+
+**Body:**
+- `format` "shunya-batch-manifest", `version` 1;
+- `batch_id` (32 hex digits), `created`, `tool`;
+- `station` (as in certificates);
+- `items`, between 1 and 100.
+
+**Each item:**
+- the device's `path`, `model`, `serial` and `fingerprint`;
+- the `method` and `nist_level`;
+- its `outcome`: certified, not-certified, verify-failed, interrupted, failed or refused;
+- the `wipe_id`;
+- the `certificate_id`, present exactly when the outcome is certified;
+- an `error` summary.
+
+A device refused before it could be identified gets the fingerprint `unknown:<path>`.
+
+**Verification** (`shunya-verify manifest`):
+1. The canonical form and the signature.
+2. Trust in the station under the same rules as certificates: root, validity, revocation,
+   and dev keys only with `--allow-dev-key`.
+3. The log proof, if one is attached.
+4. With `--certs DIR`, every certified item needs a valid certificate with that ID, for
+   the same fingerprint, wipe and station. Missing or mismatched ones make the batch
+   **INCOMPLETE**, exit 1.
+
+A manifest does not replace the certificates. Each certificate stands on its own.

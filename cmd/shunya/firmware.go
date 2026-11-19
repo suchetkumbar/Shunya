@@ -165,6 +165,19 @@ func ataPreconditions(spec *targetSpec, id *ata.Identify, f wipeFlags, stderr io
 	return pre
 }
 
+// recommend ranks the methods for a probed target: NVMe facts if it is NVMe, else
+// the ATA facts and the live preconditions of each ATA method.
+func recommend(spec *targetSpec, f wipeFlags, hp *engine.HiddenPlan, id *ata.Identify, nv *engine.NVMePlan, stderr io.Writer) engine.Recommendation {
+	in := engine.RecommendInput{Media: spec.media, Virtual: spec.virtual, NVMe: nv}
+	if nv == nil {
+		in.Hidden = hp
+		if id != nil && hp != nil && hp.Before.Checked {
+			in.Preconditions = ataPreconditions(spec, id, f, stderr)
+		}
+	}
+	return engine.Recommend(in)
+}
+
 // cmdPlan: shunya plan DEVICE — every method, its level and why, and the choice.
 func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	fl := flag.NewFlagSet("plan", flag.ContinueOnError)
@@ -181,28 +194,25 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	in := engine.RecommendInput{Media: spec.media, Virtual: spec.virtual}
 	note := ""
-	if nv, why, code := probeNVMe(spec, f, stderr); code != 0 {
+	nv, why, code := probeNVMe(spec, f, stderr)
+	if code != 0 {
 		return code
-	} else if nv != nil {
-		in.NVMe = nv
-	} else if why != "" {
+	}
+	if nv == nil && why != "" {
 		note = why
 	}
-	if in.NVMe == nil {
-		hp, id, code := probeHidden(spec, f, stderr)
-		if code != 0 {
+	var hp *engine.HiddenPlan
+	var id *ata.Identify
+	if nv == nil {
+		if hp, id, code = probeHidden(spec, f, stderr); code != 0 {
 			return code
 		}
-		in.Hidden = hp
-		if id != nil && hp != nil && hp.Before.Checked {
-			in.Preconditions = ataPreconditions(spec, id, f, stderr)
-		} else if hp != nil && note == "" {
+		if (id == nil || hp == nil || !hp.Before.Checked) && hp != nil && note == "" {
 			note = hp.Before.Reason
 		}
 	}
-	r := engine.Recommend(in)
+	r := recommend(spec, f, hp, id, nv, stderr)
 	if *asJSON {
 		return writeJSON(stdout, stderr, r)
 	}

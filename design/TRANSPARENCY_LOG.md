@@ -25,6 +25,7 @@ One type byte, then the payload (`internal/logentry`):
 | `0x01` certificate | the certificate file's canonical envelope with `"log": null` (no newline) |
 | `0x02` seed request | RFC 8785 JSON of a `SeedRequest`, signed by the station key (context `shunya/seed-request/v1`) |
 | `0x03` beacon | 32 random bytes from the log |
+| `0x04` batch manifest (M9) | the manifest file's canonical envelope with `"log": null` (`CERTIFICATES.md`, Batch manifests) |
 
 ## Unpredictable sampling (brief §3.3)
 
@@ -76,6 +77,7 @@ With `--log`, the QR URL defaults to the log's page, `URL/c/`. Plain `http` is a
 | `GET /revocations` | the root-signed revocation list the server checks against |
 | `POST /add` | logs a certificate; returns its inclusion proof |
 | `POST /seed` | logs a seed request; returns the checkpoint and proof |
+| `POST /manifest` | logs a fleet batch manifest, verified like a certificate; returns its inclusion proof (M9) |
 | `GET /proof/{id}` | the inclusion proof of a logged certificate |
 | `GET /consistency?from=N` | a consistency proof from size N to the current tree |
 | `GET /cert/{id}` | the logged certificate, with its proof attached |
@@ -109,7 +111,7 @@ The audit:
 1. Checks the checkpoint signature.
 2. Fetches every entry, rebuilds the tree, and checks it against the checkpoint's root and against every tile. This catches tampering behind the log's back.
 3. Checks a consistency proof from the checkpoint saved by the last audit to the new one. This catches a log that deleted, edited or reordered published entries and re-signed everything; such a log passes step 2.
-4. Checks every entry's form and every seed request's signature, and reports repeated seed requests.
+4. Checks every entry's form and every seed request's signature, counts certificates, batch manifests, seed requests and beacons, and reports repeated seed requests.
 
 The state file is replaced only after an audit passes.
 

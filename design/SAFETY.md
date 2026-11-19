@@ -88,6 +88,12 @@ machine Shunya runs on. They override every other requirement.
 37. **The server is local unless told otherwise.** `shunya-verify serve` binds to loopback; any other address needs `--allow-public`. Requests are rate-limited, bodies size-limited, and logs never contain bodies or query strings. Only root-certified, unrevoked stations get seeds or log certificates.
 38. **Answers from the log are verified before use.** The station checks every checkpoint signature and inclusion proof against the log key it was configured with; an answer that does not verify is an error, never a seed.
 
+39. **One wipe path.** The TUI and fleet mode run each disk through exactly the code of `shunya wipe --execute`: the same guards, journal, verification and certificate. They add selection and display only, never a write path of their own.
+40. **Typed confirmation in the TUI, in every build.** Each selected disk needs the last 4 characters of its serial typed in. A wrong entry starts nothing. Protected disks (system, boot, mounted, in use, lab lock) are listed but cannot be selected. The typed text is passed on as `--confirm`, so release builds check it again when the device is opened.
+41. **Fleet mode wipes only pre-approved disks.** `fleet --execute` needs `--approved FILE --yes-really`. Every disk whose fingerprint is not in the list is refused before it is opened, in every build, and recorded as refused in the manifest.
+42. **What you see is what runs.** The method on the TUI's plan screen is pinned for the run. One Ctrl+C only asks; a second one stops the wipes, which can be resumed from their journals.
+43. **Pseudo-terminals only in the lab.** The TUI acceptance test opens `/dev/ptmx` to type into the TUI. It is a lab test, built only with `-tags labtest` and run only inside the VM (`inLab`). No host test opens a terminal device.
+
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is
 treated as outside its intent. `/dev/urandom` is no longer read: the lab token comes
@@ -108,3 +114,4 @@ from `openssl rand`, which uses `getrandom(2)`. The user was told about this.
 | 2026-11-17 | Alpine 3.24.2 cloud image (149 MiB, SHA-512 verified) into `lab/images/` | repo (gitignored) |
 | 2026-11-17 | apt: `gcc libc6-dev` (race detector only; binaries stay `CGO_ENABLED=0`) | WSL Debian |
 | 2026-11-17 | Go module `golang.org/x/sys` v0.50.0 (pre-approved) | Go module cache |
+| 2026-11-19 | Go modules `charmbracelet/bubbletea` v1.3.10 and `lipgloss` v1.1.0 (pre-approved TUI library), with 15 indirect modules (`DEPENDENCIES.md`) | Go module cache |

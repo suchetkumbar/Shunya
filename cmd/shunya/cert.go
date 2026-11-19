@@ -142,6 +142,9 @@ func issueCertificate(r issueRequest, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "CERTIFICATE %s\n  %s\n  %s\n  QR: %s%s\n", id, r.outJSON, r.outPDF, body.VerifyURL, id)
+	if res := r.log.result; res != nil {
+		res.CertID, res.CertJSON, res.CertPDF, res.QR = id, r.outJSON, r.outPDF, body.VerifyURL+id
+	}
 	if r.log.logURL != "" {
 		if err := submit(context.Background(), r.log, r.outJSON, stdout); err != nil {
 			return fmt.Errorf("log submission: %w", err)

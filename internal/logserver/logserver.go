@@ -7,6 +7,7 @@
 //	GET  /revocations         the root's revocation list the server checks against (root-signed)
 //	POST /add                 submit a certificate file → its inclusion proof
 //	POST /seed                submit a signed seed request → checkpoint + inclusion proof
+//	POST /manifest            submit a fleet batch manifest → its inclusion proof
 //	GET  /proof/{id}          inclusion proof of a logged certificate, current checkpoint
 //	GET  /consistency?from=N  consistency proof from size N to the current checkpoint
 //	GET  /cert/{id}           the logged certificate file with its current proof attached
@@ -40,6 +41,7 @@ import (
 	"shunya/internal/cert"
 	"shunya/internal/keys"
 	"shunya/internal/logentry"
+	"shunya/internal/manifest"
 	"shunya/internal/note"
 	"shunya/internal/tilestore"
 )
@@ -75,6 +77,7 @@ type Server struct {
 
 	mu    sync.Mutex
 	byID  map[string]uint64 // certificate ID → entry index
+	batch map[string]uint64 // manifest ID → entry index
 	seeds map[string]int    // station key | wipe | fingerprint → seed requests
 }
 
@@ -99,7 +102,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.PostCost = 5
 	}
 	cfg.Policy.LogKey = cfg.LogKey
-	s := &Server{cfg: cfg, limiter: newLimiter(cfg.Rate, cfg.Burst, cfg.Now), byID: map[string]uint64{}, seeds: map[string]int{},
+	s := &Server{cfg: cfg, limiter: newLimiter(cfg.Rate, cfg.Burst, cfg.Now), byID: map[string]uint64{}, batch: map[string]uint64{}, seeds: map[string]int{},
 		page: template.Must(template.New("page").Parse(pageHTML))}
 	var bad error
 	cfg.Log.Entries(func(i uint64, e []byte) {
@@ -134,6 +137,16 @@ func (s *Server) index(i uint64, e []byte) error {
 			return fmt.Errorf("logserver: entry %d: %v", i, err)
 		}
 		s.seeds[seedKey(q)]++
+	case logentry.TypeManifest:
+		var env struct {
+			Manifest json.RawMessage `json:"manifest"`
+		}
+		if err := json.Unmarshal(payload, &env); err != nil {
+			return fmt.Errorf("logserver: entry %d: %v", i, err)
+		}
+		if id := cert.ID(env.Manifest); s.batch[id] == 0 {
+			s.batch[id] = i + 1
+		}
 	}
 	return nil
 }
@@ -162,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /add", s.add)
 	mux.HandleFunc("POST /seed", s.seed)
+	mux.HandleFunc("POST /manifest", s.addManifest)
 	mux.HandleFunc("GET /proof/{id}", s.proof)
 	mux.HandleFunc("GET /consistency", s.consistency)
 	mux.HandleFunc("GET /cert/{id}", s.certFile)
@@ -335,6 +349,44 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	if !dup {
 		if i, err = s.cfg.Log.Append(entry); err == nil {
 			s.byID[res.ID] = i
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		s.cfg.Logger.Error("append", "err", err.Error())
+		fail(w, http.StatusInternalServerError, "the log could not store the entry")
+		return
+	}
+	in, err := s.inclusion(i)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AddResponse{ID: res.ID, Duplicate: dup, Inclusion: in})
+}
+
+// addManifest logs a batch manifest, verified like a certificate (root, revocation).
+func (s *Server) addManifest(w http.ResponseWriter, r *http.Request) {
+	file, ok := readBody(w, r, manifest.MaxBytes+1)
+	if !ok {
+		return
+	}
+	res, err := manifest.Verify(file, s.cfg.Policy)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "manifest refused: %v", err)
+		return
+	}
+	entry, err := manifest.LogEntry(file)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "manifest refused: %v", err)
+		return
+	}
+	s.mu.Lock()
+	n, dup := s.batch[res.ID] // index + 1
+	i := n - 1
+	if !dup {
+		if i, err = s.cfg.Log.Append(entry); err == nil {
+			s.batch[res.ID] = i + 1
 		}
 	}
 	s.mu.Unlock()

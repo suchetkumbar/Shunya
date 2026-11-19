@@ -23,7 +23,7 @@ import (
 )
 
 // version is reported in journals and certificates.
-var version = "0.8.0-dev"
+var version = "0.9.0-dev"
 
 // wrapTarget lets tests slow down or observe the target; identity in production.
 var wrapTarget = func(t backend.Target) backend.Target { return t }
@@ -40,6 +40,17 @@ type wipeFlags struct {
 	seed, method, hpa, stationCert, verifyURL          string
 	logURL, logKey, offlineSeed                        string
 	sector, chunkMiB, syncMiB, passes, sample          int
+
+	// Set by the TUI and fleet mode, which run several wipes in one process (zero
+	// values: the plain CLI). ctx cancels the wipe (nil: SIGINT/SIGTERM do);
+	// onProgress receives overwrite progress (nil: a progress line on stderr);
+	// result, if set, is filled in as the wipe goes.
+	ctx        context.Context
+	onProgress func(engine.Progress)
+	result     *jobResult
+	// autoVerify (fleet, TUI): a method that leaves no known pattern is verified by
+	// the marker check alone instead of refusing the requested read-back.
+	autoVerify bool
 }
 
 func cmdWipe(args []string, stdout, stderr io.Writer) int {
@@ -67,12 +78,12 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 	fl.StringVar(&f.confirm, "confirm", "", "release builds: last 4 characters of the device serial")
 	fl.BoolVar(&f.yesReally, "yes-really", false, "release builds, fleet mode: skip typing, device must be in --approved")
 	fl.StringVar(&f.approved, "approved", "", "fleet mode: file of approved device fingerprints")
-	fl.StringVar(&f.method, "method", engine.MethodOverwrite, "erase method (see shunya plan DEVICE): "+strings.Join(engine.Methods, ", "))
+	fl.StringVar(&f.method, "method", engine.MethodOverwrite, "erase method (see shunya plan DEVICE): auto (the planner's recommendation), "+strings.Join(engine.Methods, ", "))
 	fl.StringVar(&f.hpa, "hpa", engine.HPARestore, "a Host Protected Area found on the drive: wipe it and restore it afterwards (restore), wipe it and leave it removed until power-off (leave-removed), or do not wipe it (skip; disclosed in the plan)")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
-	if !slices.Contains(engine.Methods, f.method) {
+	if !slices.Contains(engine.Methods, f.method) && f.method != methodAuto {
 		fmt.Fprintf(stderr, "shunya: wipe: unknown --method %q (one of: %s)\n", f.method, strings.Join(engine.Methods, ", "))
 		return 2
 	}
@@ -280,6 +291,15 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
+	auto := f.method == methodAuto
+	if auto {
+		r := recommend(spec, f, hp, id, nv, stderr)
+		f.method = r.Best
+		fmt.Fprintf(stdout, "method: auto → %s (%s)\n", r.Best, r.Reason)
+	}
+	if f.result != nil {
+		f.result.Method = f.method
+	}
 	var plan engine.Plan
 	var refusal error
 	erase := f.method != engine.MethodOverwrite
@@ -317,6 +337,15 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "shunya: wipe: plan:", err)
 		return 2
+	}
+	if plan.VerifyPattern == "" && (f.verify || f.sample > 0) && (auto || f.autoVerify) {
+		// The recommended method leaves a vendor-defined pattern: nothing to read back
+		// against, so the marker check is the verification.
+		f.verify, f.sample = false, 0
+		fmt.Fprintf(stdout, "verification: the marker check (%s leaves a vendor-defined pattern, so a read-back has nothing to compare against)\n", plan.Method)
+	}
+	if f.result != nil {
+		f.result.Plan = &plan
 	}
 	if plan.VerifyPattern == "" && (f.verify || f.sample > 0) {
 		fmt.Fprintf(stderr, "shunya: wipe: %s leaves an indeterminate pattern; there is nothing to verify against (drop --verify/--sample; the marker check runs anyway)\n", plan.Method)
@@ -391,6 +420,9 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shunya: wipe: journal:", err)
 		return 1
 	}
+	if f.result != nil {
+		f.result.WipeID, f.result.Started = wipeID, true
+	}
 	fmt.Fprintf(stdout, "\nwipe %s started; journal %s\n", wipeID, f.journal)
 	return runWipe(tg, plan, rec, nil, engine.RunOptions{}, f, stdout, stderr)
 }
@@ -399,8 +431,12 @@ func freshWipe(f wipeFlags, dev string, stdout, stderr io.Writer) int {
 // overwrite or the Security Erase, verification, and the HPA policy last (only after a
 // completed wipe; an interrupted one leaves the HPA removed until power-off or resume).
 func runWipe(tg backend.Target, plan engine.Plan, rec engine.JournalRecorder, st *engine.State, opts engine.RunOptions, f wipeFlags, stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx := f.ctx
+	if ctx == nil {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+	}
 	dev, isATA := ataDevice(tg)
 	work := tg
 	removeHPA := plan.Hidden != nil && plan.Hidden.RemoveHPA
@@ -582,12 +618,18 @@ func execute(ctx context.Context, tg backend.Target, plan engine.Plan, rec engin
 		defer close(printed)
 		var last time.Time
 		for p := range ch {
+			if f.onProgress != nil {
+				f.onProgress(p)
+				continue
+			}
 			if time.Since(last) >= 500*time.Millisecond || p.Done == p.Total {
 				last = time.Now()
 				fmt.Fprintf(stderr, "\r%s", progressLine(p))
 			}
 		}
-		fmt.Fprintln(stderr)
+		if f.onProgress == nil {
+			fmt.Fprintln(stderr)
+		}
 	}()
 	res, err := engine.Run(ctx, wrapTarget(tg), plan, rec, opts)
 	<-printed

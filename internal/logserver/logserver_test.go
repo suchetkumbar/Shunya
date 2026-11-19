@@ -25,6 +25,7 @@ import (
 	"shunya/internal/logclient"
 	"shunya/internal/logentry"
 	"shunya/internal/logserver"
+	"shunya/internal/manifest"
 	"shunya/internal/note"
 	"shunya/internal/tilestore"
 )
@@ -370,5 +371,60 @@ func TestReloadIndexes(t *testing.T) {
 	e.start(t, 1000)
 	if code, page := get(t, e.srv.URL+"/c/"+id); code != 200 || !strings.Contains(page, ">VALID<") {
 		t.Fatal(code)
+	}
+}
+
+// A fleet batch manifest is logged like a certificate: verified under the root and the
+// revocation list first, logged once, its proof checked by the client; a reload keeps it.
+func TestManifest(t *testing.T) {
+	e := newEnv(t, 1000)
+	ctx := context.Background()
+	file, _ := e.logged(t, "SN-M1")
+	cr, err := cert.Verify(file, e.org.Policy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := e.org.StPriv.Public().(ed25519.PublicKey)
+	st := e.org.Station
+	m := manifest.Manifest{BatchID: strings.Repeat("0c", 16), Created: keys.FormatTime(e.clk.now()), Tool: "shunya test",
+		Station: cert.StationFor(pub, &st), Items: []manifest.Item{manifest.ItemFor(cr)}}
+	mf, err := manifest.Sign(m, e.org.StPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, r, err := e.client.SubmitManifest(ctx, mf)
+	if err != nil || r.Duplicate {
+		t.Fatalf("submit: %v %+v", err, r)
+	}
+	p := e.org.Policy()
+	p.LogKey, p.RequireLog = &e.signer.Verifier, true
+	if mr, err := manifest.Verify(out, p); err != nil || !mr.Logged.Checked {
+		t.Fatalf("logged manifest: %v", err)
+	}
+	if _, r2, err := e.client.SubmitManifest(ctx, mf); err != nil || !r2.Duplicate || r2.Inclusion.Index != r.Inclusion.Index {
+		t.Fatalf("resubmit: %v %+v", err, r2)
+	}
+	// A certificate is not a manifest, and a dev-key manifest is refused.
+	if _, _, err := e.client.SubmitManifest(ctx, file); err == nil {
+		t.Error("certificate accepted at /manifest")
+	}
+	_, dev, _ := ed25519.GenerateKey(nil)
+	m.Station = cert.StationFor(dev.Public().(ed25519.PublicKey), nil)
+	devFile, _ := manifest.Sign(m, dev)
+	if _, _, err := e.client.SubmitManifest(ctx, devFile); !errors.Is(err, logclient.ErrRefused) {
+		t.Errorf("dev-key manifest: %v", err)
+	}
+	ar, err := audit.Run(os.DirFS(e.dir), &e.signer.Verifier, nil)
+	if err != nil || ar.Manifests != 1 {
+		t.Fatalf("audit: %v %+v", err, ar)
+	}
+	l, err := tilestore.Load(e.dir, e.signer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.log = l
+	e.start(t, 1000)
+	if _, r3, err := e.client.SubmitManifest(ctx, mf); err != nil || !r3.Duplicate {
+		t.Fatalf("after reload: %v %+v", err, r3)
 	}
 }

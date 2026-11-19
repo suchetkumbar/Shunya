@@ -37,6 +37,8 @@ const (
 	TypeCertificate = 0x01
 	TypeSeedRequest = 0x02
 	TypeBeacon      = 0x03
+	// TypeManifest (Milestone 9): a signed batch manifest from fleet mode, "log": null.
+	TypeManifest = 0x04
 	// MaxEntry is the tlog-tiles limit (entry bundles use 16-bit lengths).
 	MaxEntry = 1<<16 - 1
 
@@ -49,7 +51,7 @@ var ErrInvalid = errors.New("log entry invalid")
 
 // Entry returns typ || payload, refusing entries the tile format cannot hold.
 func Entry(typ byte, payload []byte) ([]byte, error) {
-	if typ < TypeCertificate || typ > TypeBeacon || len(payload)+1 > MaxEntry {
+	if typ < TypeCertificate || typ > TypeManifest || len(payload)+1 > MaxEntry {
 		return nil, fmt.Errorf("%w: type %d, %d bytes", ErrInvalid, typ, len(payload))
 	}
 	return append([]byte{typ}, payload...), nil
@@ -57,7 +59,7 @@ func Entry(typ byte, payload []byte) ([]byte, error) {
 
 // Split returns an entry's type and payload.
 func Split(e []byte) (byte, []byte, error) {
-	if len(e) < 1 || e[0] < TypeCertificate || e[0] > TypeBeacon || len(e) > MaxEntry {
+	if len(e) < 1 || e[0] < TypeCertificate || e[0] > TypeManifest || len(e) > MaxEntry {
 		return 0, nil, fmt.Errorf("%w: unknown type or size", ErrInvalid)
 	}
 	if e[0] == TypeBeacon && len(e) != 33 {

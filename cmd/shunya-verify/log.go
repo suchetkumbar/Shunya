@@ -255,7 +255,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	}
 	if *asJSON {
 		out := map[string]any{"passed": true, "origin": r.Checkpoint.Origin, "size": r.Entries, "certificates": r.Certificates,
-			"seed_requests": r.SeedRequests, "beacons": r.Beacons, "repeated_seed_requests": r.Repeated}
+			"seed_requests": r.SeedRequests, "beacons": r.Beacons, "manifests": r.Manifests, "repeated_seed_requests": r.Repeated}
 		if r.Previous != nil {
 			out["previous_size"] = r.Previous.Size
 		}
@@ -264,8 +264,8 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		enc.Encode(out)
 		return 0
 	}
-	fmt.Fprintf(stdout, "AUDIT PASSED: log %s, %d entries (%d certificates, %d seed requests, %d beacons)\n",
-		r.Checkpoint.Origin, r.Entries, r.Certificates, r.SeedRequests, r.Beacons)
+	fmt.Fprintf(stdout, "AUDIT PASSED: log %s, %d entries (%d certificates, %d batch manifest(s), %d seed requests, %d beacons)\n",
+		r.Checkpoint.Origin, r.Entries, r.Certificates, r.Manifests, r.SeedRequests, r.Beacons)
 	if r.Previous != nil {
 		fmt.Fprintf(stdout, "  consistent with the checkpoint saved before (size %d)\n", r.Previous.Size)
 	} else {

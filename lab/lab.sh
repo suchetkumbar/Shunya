@@ -8,6 +8,7 @@
 #   lab.sh runf F   run local script file F in the VM as root
 #   lab.sh push SRC DST / pull SRC DST   copy files in/out (scp)
 #   lab.sh test     push binaries + probe, run them, pull results to lab/results/
+#   lab.sh demo     push the lab builds and run the Milestone 9 demo (TUI) in the VM
 #   lab.sh down     stop the VM
 #   lab.sh reset    down + delete boot overlay and targets (base image kept)
 #
@@ -199,6 +200,22 @@ cmd_push()  { # shellcheck disable=SC2046
 cmd_pull()  { # shellcheck disable=SC2046
               scp -q -r $(ssh_opts | sed 's/-p /-P /') "$VM_USER@127.0.0.1:$1" "$2"; }
 
+cmd_demo() {
+  is_running || die "VM not running (make lab-up)"
+  local bin="$REPO_DIR/bin/lab" w=/home/$VM_USER/demo
+  [ -x "$bin/shunya" ] && [ -x "$bin/shunya-verify" ] || die "missing $bin/{shunya,shunya-verify} (make build-lab)"
+  cmd_run "rm -rf $w && mkdir -p $w && chown -R $VM_USER $w"
+  cmd_push "$bin/shunya" "$w/shunya"
+  cmd_push "$bin/shunya-verify" "$w/shunya-verify"
+  cmd_push "$LAB_DIR/demo.sh" "$w/demo.sh"
+  if [ -n "${DEMO_WIPE:-}" ]; then # non-interactive variant (checks the script itself)
+    cmd_run "DEMO_WIPE=$DEMO_WIPE sh $w/demo.sh $w"
+  else
+    # shellcheck disable=SC2046
+    ssh -t $(ssh_opts) "$VM_USER@127.0.0.1" "doas sh $w/demo.sh $w"
+  fi
+}
+
 cmd_test() {
   is_running || die "VM not running (make lab-up)"
   # bin/lab holds the token-bearing lab builds (make build-lab); they never leave the lab.
@@ -270,7 +287,8 @@ case "${1:-}" in
   push)   shift; cmd_push "$@" ;;
   pull)   shift; cmd_pull "$@" ;;
   test)   cmd_test ;;
+  demo)   cmd_demo ;;
   down)   cmd_down ;;
   reset)  cmd_reset ;;
-  *) sed -n '2,13p' "$0"; exit 2 ;;
+  *) sed -n '2,14p' "$0"; exit 2 ;;
 esac

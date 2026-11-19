@@ -68,7 +68,7 @@ func TestEntriesAndSeed(t *testing.T) {
 	if typ, p, err := Split(b); err != nil || typ != TypeBeacon || len(p) != 32 {
 		t.Fatal("beacon")
 	}
-	for _, e := range [][]byte{nil, {0}, {4, 1}, {TypeBeacon, 1, 2}} {
+	for _, e := range [][]byte{nil, {0}, {5, 1}, {TypeBeacon, 1, 2}} {
 		if _, _, err := Split(e); err == nil {
 			t.Errorf("split %v", e)
 		}

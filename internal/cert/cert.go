@@ -320,7 +320,6 @@ func Verify(file []byte, p Policy) (*Result, error) {
 		return nil, fmt.Errorf("certificate: %w", err)
 	}
 	r := &Result{Certificate: c, ID: ID(e.Certificate), Body: e.Certificate}
-	issued, _ := keys.ParseTime(c.Issued)
 	if err := r.checkLog(e, p); err != nil {
 		return nil, err
 	}
@@ -328,72 +327,97 @@ func Verify(file []byte, p Policy) (*Result, error) {
 		return nil, err
 	}
 
-	if c.Station.Certificate == nil {
-		if !p.AllowDevKey {
-			return nil, ErrDevKey
-		}
-		r.Trust = TrustDevKey
-		r.Warnings = append(r.Warnings, "signed by an uncertified development key: proves only that this file is unchanged since that key signed it")
-		return r, nil
-	}
-	sc := *c.Station.Certificate
-	if err := sc.Verify(p.Root); err != nil {
+	trust, warn, err := CheckStation(c.Station, c.Issued, p)
+	if err != nil {
 		return nil, err
 	}
-	if sc.PublicKey != c.Station.PublicKey || sc.Station != c.Station.Name {
-		return nil, fmt.Errorf("%w: station certificate is for another key or name", ErrInvalid)
+	r.Trust, r.Warnings = trust, append(r.Warnings, warn...)
+	return r, nil
+}
+
+// CheckStation decides whether the signer st (whose signature the caller verified)
+// is trusted under p for a document dated issued: a station certificate from the
+// root, valid then, for this key and name, and not revoked; or a dev key if allowed.
+// Batch manifests use the same rules as certificates.
+func CheckStation(st Station, issued string, p Policy) (trust string, warnings []string, err error) {
+	if st.Certificate == nil {
+		if !p.AllowDevKey {
+			return "", nil, ErrDevKey
+		}
+		return TrustDevKey, []string{"signed by an uncertified development key: proves only that this file is unchanged since that key signed it"}, nil
 	}
-	if !sc.ValidAt(issued) {
-		return nil, fmt.Errorf("%w: issued %s, outside the station certificate's validity (%s – %s)", ErrInvalid, c.Issued, sc.NotBefore, sc.NotAfter)
+	at, err := keys.ParseTime(issued)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: issued: %v", ErrInvalid, err)
+	}
+	sc := *st.Certificate
+	if err := sc.Verify(p.Root); err != nil {
+		return "", nil, err
+	}
+	if sc.PublicKey != st.PublicKey || sc.Station != st.Name {
+		return "", nil, fmt.Errorf("%w: station certificate is for another key or name", ErrInvalid)
+	}
+	if !sc.ValidAt(at) {
+		return "", nil, fmt.Errorf("%w: issued %s, outside the station certificate's validity (%s – %s)", ErrInvalid, issued, sc.NotBefore, sc.NotAfter)
 	}
 	switch {
 	case p.Revocations != nil:
 		if err := p.Revocations.Verify(p.Root); err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		if err := p.Revocations.Check(c.Station.KeyID, issued); err != nil {
-			return nil, err
+		if err := p.Revocations.Check(st.KeyID, at); err != nil {
+			return "", nil, err
 		}
 	case p.SkipRevocation:
-		r.Warnings = append(r.Warnings, "revocation status not checked")
+		warnings = append(warnings, "revocation status not checked")
 	default:
-		return nil, ErrNoRevocations
+		return "", nil, ErrNoRevocations
 	}
-	r.Trust = TrustStation
-	return r, nil
+	return TrustStation, warnings, nil
 }
 
 // checkLog verifies the envelope's log proof, if any, against the log key.
 func (r *Result) checkLog(e envelope, p Policy) error {
-	if string(e.Log) == "null" {
-		if p.RequireLog {
-			return fmt.Errorf("%w: not logged (no inclusion proof) and the policy requires it", ErrInvalid)
-		}
-		return nil
-	}
-	var in logentry.Inclusion
-	if err := strict(e.Log, &in); err != nil {
-		return fmt.Errorf("%w: log proof: %v", ErrInvalid, err)
-	}
-	r.Logged = &LogStatus{Index: in.Index}
-	if p.LogKey == nil {
-		if p.RequireLog {
-			return fmt.Errorf("%w: a log proof is required but no log key was given", ErrInvalid)
-		}
-		r.Warnings = append(r.Warnings, fmt.Sprintf("log inclusion proof (entry %d) not checked: no log key given", in.Index))
-		return nil
-	}
 	entry, err := entryOf(e.Certificate, e.Signature)
 	if err != nil {
 		return err
 	}
+	st, warn, err := CheckLogProof(e.Log, entry, p)
+	r.Logged, r.Warnings = st, append(r.Warnings, warn...)
+	return err
+}
+
+// CheckLogProof checks a file's "log" member (null, or a logentry.Inclusion) for the
+// log entry the file is logged as. It returns nil status for an unlogged file.
+func CheckLogProof(raw json.RawMessage, entry []byte, p Policy) (*LogStatus, []string, error) {
+	if string(raw) == "null" {
+		if p.RequireLog {
+			return nil, nil, fmt.Errorf("%w: not logged (no inclusion proof) and the policy requires it", ErrInvalid)
+		}
+		return nil, nil, nil
+	}
+	var in logentry.Inclusion
+	if err := strict(raw, &in); err != nil {
+		return nil, nil, fmt.Errorf("%w: log proof: %v", ErrInvalid, err)
+	}
+	st := &LogStatus{Index: in.Index}
+	if p.LogKey == nil {
+		if p.RequireLog {
+			return st, nil, fmt.Errorf("%w: a log proof is required but no log key was given", ErrInvalid)
+		}
+		return st, []string{fmt.Sprintf("log inclusion proof (entry %d) not checked: no log key given", in.Index)}, nil
+	}
 	cp, err := in.Verify(entry, p.LogKey)
 	if err != nil {
-		return fmt.Errorf("%w: log proof: %v", ErrInvalid, err)
+		return st, nil, fmt.Errorf("%w: log proof: %v", ErrInvalid, err)
 	}
-	r.Logged.Checkpoint, r.Logged.Checked = cp, true
-	return nil
+	st.Checkpoint, st.Checked = cp, true
+	return st, nil, nil
 }
+
+// StrictDecode decodes canonical JSON b into v and requires v to encode back to b
+// exactly (see strict); for other signed Shunya files.
+func StrictDecode(b []byte, v any) error { return strict(b, v) }
 
 // checkSeeds checks each log-seeded sampled verification: the seed request is the
 // station's, for this wipe and device, made after the erase finished; the seed is the

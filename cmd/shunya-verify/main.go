@@ -5,6 +5,7 @@
 //	shunya-verify log-key --origin NAME --out DIR
 //	shunya-verify serve --dir DIR --log-key DIR/log.key --root ROOT.pub --revocations FILE [--listen ADDR]
 //	shunya-verify audit --log URL|DIR --log-key LOG.vkey --state FILE
+//	shunya-verify manifest --root ROOT.pub --revocations FILE [--certs DIR] MANIFEST.json
 //
 // Verifying a certificate never opens a device and needs no network. Exit status:
 // 0 valid / passed, 1 invalid / failed, 2 usage.
@@ -31,23 +32,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return cmdAudit(args[1:], stdout, stderr)
 		case "log-key":
 			return cmdLogKey(args[1:], stdout, stderr)
+		case "manifest":
+			return cmdManifest(args[1:], stdout, stderr)
 		}
 	}
 	fl := flag.NewFlagSet("shunya-verify", flag.ContinueOnError)
 	fl.SetOutput(stderr)
 	fl.Usage = func() {
 		fmt.Fprint(stderr, "usage: shunya-verify --root ROOT.pub (--revocations FILE | --no-revocation-check) [--log-key LOG.vkey [--require-log]] [--allow-dev-key] [--pdf FILE] [--json] CERT.json\n"+
-			"       shunya-verify log-key | serve | audit ...   (each with -h)\n\n")
+			"       shunya-verify log-key | serve | audit | manifest ...   (each with -h)\n\n")
 		fl.PrintDefaults()
 	}
 	var o certcheck.Options
-	fl.StringVar(&o.Root, "root", "", "the organisation's root public key (root.pub, or 64 hex digits)")
-	fl.StringVar(&o.Revocations, "revocations", "", "the root's current revocation list")
-	fl.BoolVar(&o.SkipRevocation, "no-revocation-check", false, "verify without a revocation list (reported)")
-	fl.BoolVar(&o.AllowDevKey, "allow-dev-key", false, "accept certificates signed by uncertified dev keys (reported)")
+	trustFlags(fl, &o)
 	fl.StringVar(&o.PDF, "pdf", "", "also check that this PDF is exactly the certificate's rendering")
-	fl.StringVar(&o.LogKey, "log-key", "", "the transparency log's verifier key (file or key): check log proofs and log seeds")
-	fl.BoolVar(&o.RequireLog, "require-log", false, "refuse certificates without a verified log inclusion proof")
 	asJSON := fl.Bool("json", false, "print the result as JSON")
 	if err := fl.Parse(args); err != nil {
 		return 2
@@ -80,4 +78,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// trustFlags registers what a verifier trusts (shared by certificates and manifests).
+func trustFlags(fl *flag.FlagSet, o *certcheck.Options) {
+	fl.StringVar(&o.Root, "root", "", "the organisation's root public key (root.pub, or 64 hex digits)")
+	fl.StringVar(&o.Revocations, "revocations", "", "the root's current revocation list")
+	fl.BoolVar(&o.SkipRevocation, "no-revocation-check", false, "verify without a revocation list (reported)")
+	fl.BoolVar(&o.AllowDevKey, "allow-dev-key", false, "accept files signed by uncertified dev keys (reported)")
+	fl.StringVar(&o.LogKey, "log-key", "", "the transparency log's verifier key (file or key): check log proofs and log seeds")
+	fl.BoolVar(&o.RequireLog, "require-log", false, "refuse files without a verified log inclusion proof")
 }

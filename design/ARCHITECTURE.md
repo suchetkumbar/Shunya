@@ -11,8 +11,8 @@ recorded in a public append-only transparency log.
 
 ```
 cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show (M3), verify (M4), plan (M6),
-                     keys, cert (M7), cert submit and log-seeded --sample (M8)
-cmd/shunya-verify    offline certificate verifier (M7); log-key, serve, audit (M8)
+                     keys, cert (M7), cert submit and log-seeded --sample (M8), tui, fleet, --method auto (M9)
+cmd/shunya-verify    offline certificate verifier (M7); log-key, serve, audit (M8); manifest (M9)
 
 internal/sysfs       sysfs/procfs readers over fs.FS (fakeable in tests)
 internal/device      enumeration model, fingerprint, media classification (+ confidence)
@@ -39,6 +39,7 @@ internal/logentry    log entry types, seed requests, inclusion proofs, the sampl
 internal/logserver   HTTP API, rate limit, recycler page
 internal/logclient   station/auditor side; verifies every answer
 internal/audit       full-log audit: content, consistency with the saved checkpoint, grinding
+internal/manifest    signed fleet batch manifests (every disk, outcome, certificate ID)
 internal/canary      HMAC sector canaries, Aho-Corasick residue scanner, planted files,
                      carve inspection, harness report (lab/test tooling; the engine never imports it)
 lab/                 QEMU lab scripts, capability probe, lab/check (result assertions),
@@ -484,3 +485,59 @@ Full design: `TRANSPARENCY_LOG.md`. In short:
   adds `seed_request`/`seed_log` to sampled verifications.
 - `internal/logserver` is `shunya-verify serve`; `internal/audit` is `shunya-verify audit`,
   over HTTP (`logclient.FS`) or a directory.
+
+## TUI, one-click mode and fleet mode (Milestone 9)
+
+One code path for every wipe: the TUI and fleet mode add no wipe logic of their own.
+
+- **Shared job runner (`cmd/shunya/job.go`).** `runBatch` runs each target through
+  `freshWipe` and then `certifyAfter`, the same functions as `shunya wipe --execute`.
+  - **Concurrency:** a semaphore bounds how many targets run at once (`--parallel`,
+    default 3).
+  - **Per target:** each has its own journal and log file, named by position, device,
+    serial and the batch start time.
+  - **Hooks:** `wipeFlags` carries what one process needs to run several wipes.
+    - `ctx` cancels a wipe (otherwise SIGINT/SIGTERM do).
+    - `onProgress` receives overwrite progress (otherwise a progress line goes to stderr).
+    - `result` collects the wipe ID, plan, certificate, QR and log entry.
+    - `autoVerify` lets a method that leaves no known pattern fall back to its marker check.
+  - **Outcome:** the exit code and the result give each target's outcome: certified,
+    not-certified, verify-failed, interrupted, failed or refused.
+- **`--method auto`** (`recommend`, shared with `shunya plan`) applies `engine.Recommend`.
+  It picks the strongest method whose live preconditions the drive meets; otherwise an
+  overwrite, labelled Clear.
+- **Fleet (`fleet.go`).**
+  1. It inspects every target read-only.
+  2. It refuses any target not in `--approved`, in every build. Release builds check
+     again on open.
+  3. It runs the batch and prints one line per event, prefixed with the device.
+  4. It signs the manifest.
+- **TUI (`tui.go`, bubbletea v1 + lipgloss).** A state machine over five screens: pick,
+  plan, confirm, run, done.
+  - **Backend:** the model talks to a small `tuiBackend` interface. `liveTUI` plans with a
+    dry-run `freshWipe` and runs with `runBatch`.
+  - **Tests:** they drive the model with key messages and a fake backend, or the real
+    backend on image files. No terminal is needed.
+  - **Pinned method:** the method shown on the plan screen is pinned per target
+    (`batchTarget.method`), so the run cannot pick a different one. The typed text is
+    passed as `--confirm` per target.
+  - **One-click (`--simple`):** one disk, the recommended method, and block-letter status
+    words (`bigtext.go`).
+- **Explanations (`explain.go`).** Each rule matches messages Shunya itself produces and
+  gives what happened, why, and what to do. `explained()` prints them after a failed
+  `wipe` or `verify`; fleet and the TUI show them per disk. Tests feed the real messages
+  into it: guard verdicts from the fake sysfs scenarios, ATA refusals, engine and
+  log-client errors.
+- **Batch manifest (`internal/manifest`).** It is signed like a certificate, canonical
+  JSON with context `shunya/batch-manifest/v1`, and becomes log entry type 0x04.
+  - **Trust:** it uses `cert.CheckStation` and `cert.CheckLogProof`, now exported
+    from the certificate's own checks.
+  - **Matching:** `certcheck.VerifyManifest` matches it against certificate files.
+  - **Server:** `POST /manifest` logs it.
+
+```
+shunya tui ──┐                    ┌─ freshWipe ─ guards ─ plan ─ journal ─ engine.Run / firmware
+             ├─ runBatch (N ≤ P) ─┤             ─ verify (full | log seed)
+shunya fleet ┘                    └─ certifyAfter ─ certificate ─ POST /add
+                     └─ writeManifest ─ manifest.Sign ─ POST /manifest
+```

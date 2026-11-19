@@ -10,6 +10,8 @@ with its justification.
 |---|---|---|---|
 | `golang.org/x/sys` v0.50.0 | `internal/backend` (Linux) | open(2) with O_EXCL/O_DIRECT, fstat, BLKSSZGET/BLKPBSZGET/BLKDISCARD ioctls, fallocate. Maintained by the Go team; the stdlib `syscall` package is frozen and lacks these. | M2 |
 | `golang.org/x/mod` v0.42.0 | **tests only** (`internal/tlog`, `note`, `checkpoint`, `tilestore`) | An independent implementation of the same formats (sumdb `tlog` and `note`), used as a test oracle: roots, proofs, tile paths and contents, signed notes in both directions. Not linked into any binary (`go list -deps ./cmd/...` doesn't list it). Go team. v0.42.0 (2026-10-09) rather than v0.43.0 (ten days old). The note package was pre-approved; `sumdb/tlog` is in the same module. | M8 |
+| `github.com/charmbracelet/bubbletea` v1.3.10 | `cmd/shunya` (`tui`) | The full-screen TUI's event loop, terminal input and rendering (pre-approved). v1.3.10 (2025-09-17): the stable v1 API; v2 (`charm.land/bubbletea/v2`) exists but is newer and has a different API. MIT. | M9 |
+| `github.com/charmbracelet/lipgloss` v1.1.0 | `cmd/shunya` (`tui`) | Styles and borders for the TUI (pre-approved). v1.1.0 (2025-03-12). MIT. | M9 |
 | `golang.org/x/term` v0.47.0 | `cmd/shunya` (keys) | Reads the root key passphrase without echo, on Linux and Windows. Go team. v0.47.0 (2026-10-09) rather than v0.48.0 (2026-11-09, nine days old when added); it needs only `x/sys`, already present. Approved by the user for M7. | M7 |
 
 No module was added in M3. `golang.org/x/sys` also provides flock and `O_NOFOLLOW` for the journal and `st_dev` for the journal placement check. The random pattern uses the standard library's `crypto/aes` + `crypto/cipher` CTR; ChaCha20 would need `x/crypto`, which isn't pre-approved. Leak checks use the in-tree `internal/testutil/leakcheck` instead of `go.uber.org/goleak`.
@@ -17,8 +19,23 @@ No module was added in M3. `golang.org/x/sys` also provides flock and `O_NOFOLLO
 No module was added in M4 either. The canary harness uses the standard library only: `crypto/hmac`, `image/jpeg`, `archive/zip`, `hash/crc32`, and `math/rand/v2` ChaCha8 for the sample positions. Aho-Corasick is written in-tree.
 
 Pre-approved for later milestones: a TUI library
-(`charmbracelet/bubbletea` + `lipgloss`, M9), a PDF library (`go-pdf/fpdf`, M7),
+(`charmbracelet/bubbletea` + `lipgloss`, taken in M9), a PDF library (`go-pdf/fpdf`, M7),
 a QR library (M7), and `golang.org/x/mod/sumdb/note` (signed notes, M8, if useful).
+
+### Indirect modules of the TUI (M9)
+Linked into `shunya` only; `shunya-verify` links none of them. All are MIT unless noted.
+
+| Module | Linked on | Role |
+|---|---|---|
+| `charmbracelet/x/ansi` v0.10.1, `x/cellbuf`, `x/term` v0.2.1, `colorprofile` | Linux, Windows | ANSI parsing, cell buffers, terminal state, colour profile |
+| `muesli/termenv` v0.16.0, `muesli/ansi`, `muesli/cancelreader` v0.2.2 | Linux, Windows | terminal capabilities, ANSI widths, cancellable input |
+| `mattn/go-isatty` v0.0.20, `mattn/go-runewidth` v0.0.16, `rivo/uniseg` v0.4.7 | Linux, Windows | tty detection, character widths, grapheme clusters |
+| `lucasb-eyer/go-colorful` v1.2.0, `aymanbagabas/go-osc52/v2` v2.0.1, `xo/terminfo` | Linux, Windows | colour maths, clipboard escape (unused), terminfo |
+| `erikgeiser/coninput`, `mattn/go-localereader` v0.0.1, `golang.org/x/text` v0.3.8 (BSD-3) | Windows only | console input, locale decoding |
+
+`go-localereader` v0.0.1 ships no licence file. Its README states "MIT". The module
+graph also lists `golang.org/x/exp`, but it is not linked (`go list -deps` does not show it).
+`govulncheck` reports no vulnerabilities.
 
 ## Development tools (not linked into binaries)
 

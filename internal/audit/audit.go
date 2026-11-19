@@ -41,6 +41,7 @@ type Result struct {
 	Certificates int
 	SeedRequests int
 	Beacons      int
+	Manifests    int
 	// Repeated lists station/wipe/device triples with more than one seed request.
 	Repeated []string
 }
@@ -102,6 +103,8 @@ func Run(fsys fs.FS, key *note.Verifier, prev []byte) (*Result, error) {
 			r.Certificates++
 		case logentry.TypeBeacon:
 			r.Beacons++
+		case logentry.TypeManifest:
+			r.Manifests++
 		case logentry.TypeSeedRequest:
 			r.SeedRequests++
 			var q logentry.SeedRequest

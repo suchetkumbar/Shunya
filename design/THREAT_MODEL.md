@@ -59,6 +59,11 @@
 | T44 | Split view: the log shows different trees to different clients | M8: only detected when auditors compare saved checkpoints; no witnesses/cosigners yet | open |
 | T45 | Abuse of the public server (floods, huge bodies, path tricks, script injection on the page) | M8: per-client token bucket, 64 KiB/16 KiB body limits, timeouts, canonical tile paths only, html/template escaping, CSP `default-src 'none'`, loopback unless `--allow-public` | mitigated (M8) |
 | T46 | Logged certificates expose device serials and station names | M8: the log is public by design; documented. Hashing or redacting serials would weaken what a recycler can check | accepted |
+| T47 | Operator wipes the wrong disk in a busy session (wrong row, look-alike disks) | M9: protected disks unselectable; the plan screen names model, serial, size and method; the last 4 characters of each serial must be typed, in every build; the plan's method is pinned | mitigated (M9) |
+| T48 | A fleet batch silently includes a disk nobody approved (a stray USB stick, a swapped drive) | M9: `--approved` fingerprint list required for `fleet --execute`; unlisted disks refused before opening and recorded as refused; the backend re-checks identity before the first write (M2) | mitigated (M9) |
+| T49 | A batch hides its failures: the station shows only the certificates that succeeded | M9: the signed batch manifest lists every disk tried, with its outcome; it is logged (entry 0x04), and `shunya-verify manifest --certs` reports missing or mismatched certificates. A station can still skip writing a manifest at all | partly mitigated (M9) |
+| T50 | Misleading or missing error guidance makes operators work around a guard (e.g. forcing a frozen drive) | M9: plain explanations for known refusals, with the safe remedy only; Shunya never applies a workaround itself (suspend/resume, hot-plug) | mitigated (M9) |
+| T51 | One-click mode hides what is done | M9: the one-click screen still shows the method (in plain words and by name), its NIST level and the verification. The certificate is the same as in expert mode | mitigated (M9) |
 
 ## Out of scope
 - Physical destruction (NIST "Destroy").
@@ -91,3 +96,8 @@
   sample positions were fixed only after the station asked, once the wipe was recorded as
   done. Neither proves wall-clock time, and neither helps if the tool itself is modified
   to lie: that is what reproducible builds and the recorded build hash are for.
+- **M9: what a batch manifest proves.** A valid manifest shows that this station signed
+  this list of disks and outcomes at that time. With the log, it shows the list was never
+  changed afterwards. It proves completeness only for the batches the station did
+  manifest, and it adds no evidence about any one disk beyond that disk's certificate.
+  The TUI and fleet mode change who selects and confirms; they add no new way to write.

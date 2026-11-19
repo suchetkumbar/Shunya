@@ -3,14 +3,14 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 8 (transparency log).** Certificates go into an append-only Merkle-tree log (C2SP checkpoints and tiles); `shunya-verify serve` is the log and a recycler page the QR code leads to, and `shunya-verify audit` catches a log that rewrites its past. Sampled verification takes its seed from the log after the wipe, so the operator can't choose it. A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
+> **Status: Milestone 9 (TUI, one-click and fleet mode).** `shunya tui` is a full-screen picker → plan → typed confirmation → live progress → certificate flow; `--simple` is a one-click mode for non-technical users (recommended method, one confirmation, large status text). `shunya fleet` and the TUI wipe several disks in parallel and sign a batch manifest, logged like the certificates; failures come with a plain what-happened / why / what-to-do explanation. `design/DEMO.md` reproduces the lab demo in minutes. Since Milestone 8, certificates go into an append-only Merkle-tree log (C2SP checkpoints and tiles); `shunya-verify serve` is the log and a recycler page the QR code leads to, and `shunya-verify audit` catches a log that rewrites its past. Sampled verification takes its seed from the log after the wipe, so the operator can't choose it. A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
 - Hidden-area handling (HPA/DCO) on ATA drives.
 - Verification samples chosen so the operator can't predict them.
 - Signed certificates (JSON + PDF + QR) recorded in an append-only transparency log.
-- Offline bootable image; one-click mode; fleet mode.
+- One-click mode and fleet mode (Milestone 9); an offline bootable image (Milestone 10).
 
 ## Layout
 See `design/ARCHITECTURE.md`. Safety rules: `design/SAFETY.md`. Levels and what each
@@ -124,6 +124,34 @@ shunya cert submit --log http://127.0.0.1:8080 --log-key $D/log/log.vkey CERT.js
   consistent with the checkpoint saved last time. Deleting or editing an entry is caught,
   even if the operator re-signs everything.
 - **Design:** `design/TRANSPARENCY_LOG.md`.
+
+### TUI, one-click mode and fleet mode (Milestone 9)
+```sh
+shunya tui --journal-dir $D/batch --key $D/station.key --station-cert $D/station.cert.json \
+    [--log URL --log-key K] [--image F]... [DEVICE...]       # pick, plan, confirm, watch, certificates
+shunya tui --simple --journal-dir $D --key $D/station.key ... # one disk, recommended method, big text
+shunya list --fingerprints > approved.txt                    # edit: keep only the disks to wipe
+shunya fleet --execute --approved approved.txt --yes-really --journal-dir $D/batch \
+    --key $D/station.key --station-cert $D/station.cert.json [--parallel 3] DEVICE...
+shunya-verify manifest --root R/root.pub --revocations R/revocations.json --certs $D/batch $D/batch/batch-*.manifest.json
+```
+- **Same path as `shunya wipe`:** every disk of the TUI or a fleet runs the exact
+  `wipe --execute` code (guards, journal, verification, certificate, log). Each disk has its
+  own journal, log file and certificate in `--journal-dir`.
+- **Confirmation:** the TUI asks for the last 4 characters of each disk's serial number in
+  every build. Fleet mode instead needs a list of approved fingerprints made in advance and
+  `--yes-really`. Protected disks are shown but cannot be selected.
+- **Method:** `auto` by default, the planner's recommendation (`shunya plan`). The TUI runs
+  exactly the method its plan screen showed.
+- **Verification:** full read-back by default; `--sample N` with `--log` samples instead.
+  A firmware method that leaves no known pattern is checked by its markers.
+- **Batch manifest:** one file signed by the station key, listing every disk, its outcome
+  (certified, verify-failed, refused, …) and its certificate ID. It goes into the log as
+  entry type 0x04. `shunya-verify manifest --certs DIR` checks that every certified disk
+  has a matching, valid certificate.
+- **Errors:** known refusals and failures get a three-part explanation, for example a
+  frozen ATA drive, a mounted disk, the lab lock, an unreachable log or a revoked station.
+- **Demo:** `design/DEMO.md` (`make lab-up && make lab-demo`).
 
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):

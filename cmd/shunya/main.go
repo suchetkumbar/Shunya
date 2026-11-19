@@ -7,12 +7,15 @@
 //	shunya keys ...                  station keys, offline root, revocation (Milestone 7)
 //	shunya cert issue|show|pdf       erasure certificates (Milestone 7)
 //	shunya ata identify|hidden|unlock  ATA IDENTIFY, hidden areas, Security Erase recovery (Milestone 5)
+//	shunya tui [--simple]            full-screen device picker, plan, confirmation, progress (Milestone 9)
+//	shunya fleet ...                 several wipes in parallel, with a signed batch manifest (Milestone 9)
 //
 // list and guard never open a device node or write anything; wipe writes only with
 // --execute, after every guard in internal/backend.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -35,6 +38,9 @@ commands:
   wipe [flags] DEVICE     overwrite DEVICE (Clear) or --method ata-secure-erase. Without --execute it
   wipe [flags] --image F  prints the plan and writes nothing. See shunya wipe -h.
   wipe --resume ...       continue an interrupted wipe from its journal
+  tui [--simple]          full-screen wiping: pick disks, see the plan, confirm, watch progress, get the
+                          certificate. --simple: one disk, the recommended method, big status text
+  fleet [flags] DEV...    wipe several disks in parallel and sign a batch manifest (shunya fleet -h)
   verify --journal J ...  re-verify a finished wipe (full, or --sample N with --log URL --log-key K, or --seed HEX)
   journal show JOURNAL    verify a progress journal and show its history
   keys ...                station keys, the offline root key, station certificates and
@@ -64,9 +70,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "guard":
 		return cmdGuard(args[1:], stdout, stderr)
 	case "wipe":
-		return cmdWipe(args[1:], stdout, stderr)
+		return explained(cmdWipe, args[1:], stdout, stderr)
 	case "verify":
-		return cmdVerify(args[1:], stdout, stderr)
+		return explained(cmdVerify, args[1:], stdout, stderr)
+	case "fleet":
+		return cmdFleet(args[1:], stdout, stderr)
+	case "tui":
+		return cmdTUI(args[1:], stdout, stderr)
 	case "journal":
 		return cmdJournal(args[1:], stdout, stderr)
 	case "keys":
@@ -85,6 +95,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "shunya: unknown command %q\n\n%s", args[0], usage)
 	return 2
+}
+
+// explained runs a command and, if it failed, explains the known causes in plain
+// language after its own output (usage errors, exit 2, are left alone).
+func explained(cmd func([]string, io.Writer, io.Writer) int, args []string, stdout, stderr io.Writer) int {
+	var seen bytes.Buffer
+	code := cmd(args, io.MultiWriter(stdout, &seen), io.MultiWriter(stderr, &seen))
+	if code != 0 && code != 2 {
+		printExplanations(stderr, seen.String())
+	}
+	return code
 }
 
 // liveEnv returns the running system's environment, or an exit code.
@@ -115,6 +136,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	fl.SetOutput(stderr)
 	asJSON := fl.Bool("json", false, "print JSON")
 	all := fl.Bool("all", false, "include logical devices (loop, dm, md, ram)")
+	fps := fl.Bool("fingerprints", false, "print an approved-list line (fingerprint # path serial model) for each available disk, for shunya fleet --approved")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
@@ -129,6 +151,15 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	}
 	if *asJSON {
 		return writeJSON(stdout, stderr, rep)
+	}
+	if *fps {
+		// One approved-list line per disk that is available now (fleet --approved).
+		for _, d := range rep.Devices {
+			if d.Status == device.StatusAvailable && d.Media.Type != device.MediaLogical && !d.Fingerprint.Weak {
+				fmt.Fprintf(stdout, "%s  # %s %s %s\n", d.Fingerprint.Value, d.Path, orDash(d.Serial), orDash(d.Model))
+			}
+		}
+		return 0
 	}
 	printTable(stdout, rep, *all)
 	return 0

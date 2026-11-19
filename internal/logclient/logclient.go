@@ -18,6 +18,7 @@ import (
 	"shunya/internal/cert"
 	"shunya/internal/logentry"
 	"shunya/internal/logserver"
+	"shunya/internal/manifest"
 	"shunya/internal/note"
 )
 
@@ -127,6 +128,27 @@ func (c *Client) Submit(ctx context.Context, file []byte) ([]byte, *logserver.Ad
 		return nil, nil, fmt.Errorf("the log's answer does not verify: %w", err)
 	}
 	out, err := cert.WithLog(file, r.Inclusion)
+	return out, &r, err
+}
+
+// SubmitManifest logs a batch manifest and returns it with the verified proof attached.
+func (c *Client) SubmitManifest(ctx context.Context, file []byte) ([]byte, *logserver.AddResponse, error) {
+	entry, err := manifest.LogEntry(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err := c.do(ctx, http.MethodPost, "/manifest", "application/json", file)
+	if err != nil {
+		return nil, nil, err
+	}
+	var r logserver.AddResponse
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, nil, fmt.Errorf("log answer: %v", err)
+	}
+	if _, err := r.Inclusion.Verify(entry, c.Key); err != nil {
+		return nil, nil, fmt.Errorf("the log's answer does not verify: %w", err)
+	}
+	out, err := manifest.WithLog(file, r.Inclusion)
 	return out, &r, err
 }
 

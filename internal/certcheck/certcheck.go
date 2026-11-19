@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"shunya/internal/cert"
 	"shunya/internal/certpdf"
 	"shunya/internal/keys"
+	"shunya/internal/manifest"
 	"shunya/internal/note"
 )
 
@@ -59,39 +61,11 @@ func Verify(path string, o Options) (*Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := cert.Policy{SkipRevocation: o.SkipRevocation, AllowDevKey: o.AllowDevKey, RequireLog: o.RequireLog}
-	if o.LogKey != "" {
-		if p.LogKey, err = ReadLogKey(o.LogKey); err != nil {
-			return nil, err
-		}
+	p, n, err := o.Policy()
+	if err != nil {
+		return nil, err
 	}
-	if o.Root == "" {
-		if !o.AllowDevKey {
-			return nil, errors.New("--root is required (the organisation's root public key)")
-		}
-	} else {
-		rootText := o.Root
-		if b, err := os.ReadFile(o.Root); err == nil {
-			rootText = string(b)
-		} else if len(strings.TrimSpace(o.Root)) != 64 {
-			return nil, fmt.Errorf("root key: %w", err)
-		}
-		if p.Root, err = keys.ParsePublic(rootText); err != nil {
-			return nil, fmt.Errorf("root key: %w", err)
-		}
-	}
-	out := &Outcome{}
-	if o.Revocations != "" {
-		raw, err := readLimited(o.Revocations, 4<<20)
-		if err != nil {
-			return nil, err
-		}
-		l, err := keys.ParseRevocationList(raw, p.Root)
-		if err != nil {
-			return nil, err
-		}
-		p.Revocations, out.RevocationList = &l, l.Number
-	}
+	out := &Outcome{RevocationList: n}
 	r, err := cert.Verify(file, p)
 	if err != nil {
 		return nil, err
@@ -115,6 +89,134 @@ func Verify(path string, o Options) (*Outcome, error) {
 		out.PDFChecked = true
 	}
 	return out, nil
+}
+
+// Policy loads the root key, revocation list and log key the options name, and returns
+// the revocation list's number (0: none given).
+func (o Options) Policy() (cert.Policy, uint64, error) {
+	var err error
+	p := cert.Policy{SkipRevocation: o.SkipRevocation, AllowDevKey: o.AllowDevKey, RequireLog: o.RequireLog}
+	if o.LogKey != "" {
+		if p.LogKey, err = ReadLogKey(o.LogKey); err != nil {
+			return p, 0, err
+		}
+	}
+	if o.Root == "" {
+		if !o.AllowDevKey {
+			return p, 0, errors.New("--root is required (the organisation's root public key)")
+		}
+	} else {
+		rootText := o.Root
+		if b, err := os.ReadFile(o.Root); err == nil {
+			rootText = string(b)
+		} else if len(strings.TrimSpace(o.Root)) != 64 {
+			return p, 0, fmt.Errorf("root key: %w", err)
+		}
+		if p.Root, err = keys.ParsePublic(rootText); err != nil {
+			return p, 0, fmt.Errorf("root key: %w", err)
+		}
+	}
+	if o.Revocations == "" {
+		return p, 0, nil
+	}
+	raw, err := readLimited(o.Revocations, 4<<20)
+	if err != nil {
+		return p, 0, err
+	}
+	l, err := keys.ParseRevocationList(raw, p.Root)
+	if err != nil {
+		return p, 0, err
+	}
+	p.Revocations = &l
+	return p, l.Number, nil
+}
+
+// ManifestOutcome is a verified batch manifest and the certificates checked with it.
+type ManifestOutcome struct {
+	*manifest.Result
+	RevocationList uint64
+	Certificates   []*cert.Result
+	// Problems lists certified devices whose certificate is missing or does not match;
+	// Invalid lists certificate files that did not verify. Both empty: complete.
+	Problems []string
+	Invalid  []string
+}
+
+// Complete: every certified device has a matching, valid certificate.
+func (m *ManifestOutcome) Complete() bool { return len(m.Problems) == 0 && len(m.Invalid) == 0 }
+
+// VerifyManifest checks a batch manifest, then each certificate file given (files, or
+// every *.cert.json in a directory) and matches them against the manifest.
+func VerifyManifest(path string, certs []string, o Options) (*ManifestOutcome, error) {
+	file, err := readLimited(path, manifest.MaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	p, n, err := o.Policy()
+	if err != nil {
+		return nil, err
+	}
+	r, err := manifest.Verify(file, p)
+	if err != nil {
+		return nil, err
+	}
+	out := &ManifestOutcome{Result: r, RevocationList: n}
+	var files []string
+	for _, c := range certs {
+		if st, err := os.Stat(c); err == nil && st.IsDir() {
+			m, _ := filepath.Glob(filepath.Join(c, "*.cert.json"))
+			files = append(files, m...)
+			continue
+		}
+		files = append(files, c)
+	}
+	for _, f := range files {
+		b, err := readLimited(f, cert.MaxBytes)
+		if err == nil {
+			var cr *cert.Result
+			if cr, err = cert.Verify(b, p); err == nil {
+				out.Certificates = append(out.Certificates, cr)
+				continue
+			}
+		}
+		out.Invalid = append(out.Invalid, fmt.Sprintf("%s: %v", f, err))
+	}
+	out.Problems = r.CheckCertificates(out.Certificates)
+	return out, nil
+}
+
+// PrintManifest summarises a manifest check.
+func PrintManifest(w io.Writer, m *ManifestOutcome) {
+	verdict := "BATCH COMPLETE"
+	if !m.Complete() {
+		verdict = "BATCH INCOMPLETE"
+	}
+	mf := m.Manifest
+	fmt.Fprintf(w, "%s  manifest %s\n  batch %s, %s, station %s (%s), %d device(s): %d certified, %d not\n", verdict, m.ID,
+		mf.BatchID, mf.Created, orDash(mf.Station.Name), m.Trust, len(mf.Items), m.Certified(), m.Failed())
+	if l := m.Logged; l != nil {
+		state := "proof not checked (no --log-key)"
+		if l.Checked {
+			state = fmt.Sprintf("proof verified against checkpoint %s size %d", l.Checkpoint.Origin, l.Checkpoint.Size)
+		}
+		fmt.Fprintf(w, "  log: entry %d, %s\n", l.Index, state)
+	}
+	for _, it := range mf.Items {
+		id := it.CertificateID
+		if id == "" {
+			id = it.Error
+		}
+		fmt.Fprintf(w, "  %-14s %-24s serial %-20s %-34s %s\n", it.Outcome, it.Path, orDash(it.Serial), it.Method, id)
+	}
+	for _, p := range m.Problems {
+		fmt.Fprintln(w, "  PROBLEM:", p)
+	}
+	for _, p := range m.Invalid {
+		fmt.Fprintln(w, "  INVALID certificate:", p)
+	}
+	for _, x := range m.Warnings {
+		fmt.Fprintln(w, "  warning:", x)
+	}
 }
 
 func readLimited(path string, max int64) ([]byte, error) {

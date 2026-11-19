@@ -19,7 +19,7 @@ TAGSETS := "" release labtest
 LINTTAGS := $(TAGSETS) brokenwipe
 
 .PHONY: all build build-linux build-release build-windows windows-check build-lab repro test test-big test-broken bench race fuzz vet \
-        staticcheck vulncheck lint fmt-check ci clean lab-images lab-up lab-shell lab-test lab-down lab-reset
+        staticcheck vulncheck lint fmt-check ci clean lab-images lab-up lab-shell lab-test lab-demo lab-down lab-reset
 
 all: lint test build
 
@@ -132,6 +132,9 @@ lab-shell:
 	@bash lab/lab.sh shell
 lab-test: build-linux build-lab
 	@bash lab/lab.sh test
+# The Milestone 9 demo in the VM (design/DEMO.md): keys, log, TUI on three disks, verification.
+lab-demo: build-lab
+	@bash lab/lab.sh demo
 lab-down:
 	@bash lab/lab.sh down
 lab-reset:

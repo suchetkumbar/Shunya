@@ -160,6 +160,9 @@ func submit(ctx context.Context, f wipeFlags, path string, stdout io.Writer) err
 		dup = " (already logged)"
 	}
 	fmt.Fprintf(stdout, "LOGGED %s as entry %d%s; proof verified and added to %s\n", r.ID, r.Inclusion.Index, dup, path)
+	if f.result != nil {
+		f.result.Logged, f.result.LogIndex = true, r.Inclusion.Index
+	}
 	return nil
 }
 
