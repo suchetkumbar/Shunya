@@ -23,7 +23,7 @@ import (
 )
 
 // version is reported in journals and certificates.
-var version = "0.9.0-dev"
+var version = "0.10.0-dev"
 
 // wrapTarget lets tests slow down or observe the target; identity in production.
 var wrapTarget = func(t backend.Target) backend.Target { return t }

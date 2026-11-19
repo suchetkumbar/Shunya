@@ -1,0 +1,19 @@
+# Kernel modules in the live initramfs (linux-virt), loaded in dependency order by init.
+# AHCI, libata and the SCSI core are built into linux-virt.
+# Disks
+nvme
+virtio_blk
+sd_mod
+# USB storage and keyboards
+xhci_pci
+ehci_pci
+ohci_pci
+uhci_hcd
+usb_storage
+uas
+usbhid
+hid_generic
+# The boot medium: CD-ROM (when booted as a CD) and its ext4 partitions
+sr_mod
+isofs
+ext4

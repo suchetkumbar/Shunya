@@ -53,6 +53,7 @@ commands:
   ata identify DEVICE     decode the drive's ATA IDENTIFY data (read-only; --dump FILE parses a saved dump)
   ata hidden DEVICE       report HPA/DCO hidden areas (read-only)
   ata unlock ...          remove the temporary password of an interrupted Security Erase
+  version                 print the version and build kind (dev or release)
 `
 
 func main() {
@@ -89,6 +90,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdNVMe(args[1:], stdout, stderr)
 	case "plan":
 		return cmdPlan(args[1:], stdout, stderr)
+	case "version", "--version":
+		fmt.Fprintf(stdout, "shunya %s (%s build)\n", version, backend.BuildKind)
+		return 0
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -144,7 +148,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	rep, err := device.EnumerateWith(env.FS, device.Options{Protect: env.Protect})
+	rep, err := env.Report()
 	if err != nil {
 		fmt.Fprintln(stderr, "shunya: list:", err)
 		return 1

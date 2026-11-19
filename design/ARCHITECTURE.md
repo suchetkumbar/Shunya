@@ -11,12 +11,15 @@ recorded in a public append-only transparency log.
 
 ```
 cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show (M3), verify (M4), plan (M6),
-                     keys, cert (M7), cert submit and log-seeded --sample (M8), tui, fleet, --method auto (M9)
+                     keys, cert (M7), cert submit and log-seeded --sample (M8), tui, fleet, --method auto (M9),
+                     version (M10)
 cmd/shunya-verify    offline certificate verifier (M7); log-key, serve, audit (M8); manifest (M9)
 
 internal/sysfs       sysfs/procfs readers over fs.FS (fakeable in tests)
 internal/device      enumeration model, fingerprint, media classification (+ confidence)
-internal/platform    OS layers: linux (SG_IO, NVMe admin ioctl), windows (DeviceIoControl)
+internal/winstorage  Windows storage IOCTL structures: decoders (any OS, tested) + sys_windows.go (M10)
+internal/winstorage/winata  SAT ATA PASS-THROUGH(16) CDB <-> ATA_PASS_THROUGH_EX (M10)
+internal/cpio        reproducible newc cpio writer for the live initramfs (M10)
 internal/ata         ATA CDBs, IDENTIFY parsing, HPA/DCO, Security Erase
 internal/nvme        Identify parsing, Format NVM, Sanitize
 internal/backend     Target interface, FileBackend, BlockBackend, lab lock
@@ -43,11 +46,16 @@ internal/manifest    signed fleet batch manifests (every disk, outcome, certific
 internal/canary      HMAC sector canaries, Aho-Corasick residue scanner, planted files,
                      carve inspection, harness report (lab/test tooling; the engine never imports it)
 lab/                 QEMU lab scripts, capability probe, lab/check (result assertions),
-                     lab/tests (block-device tests, -tags labtest, run as root in the VM)
+                     lab/tests (block-device tests, -tags labtest, run as root in the VM),
+                     lab/iso (boots the live ISO in QEMU from WSL, -tags labiso)
+image/               the live image: init, isolinux.cfg, modules.list, packages.lock, build.sh,
+                     mkinitramfs (build tool, runs in the VM) (M10)
 design/              committed project documentation
 ```
 
-Changes from the brief's suggested layout: `internal/sysfs`, `internal/jcs`,
+Changes from the brief's suggested layout: there is no `internal/platform`; the OS
+layers sit in `internal/backend` (`*_linux.go`, `*_windows.go`) with the Windows
+structures in `internal/winstorage`. `internal/sysfs`, `internal/jcs`,
 `internal/journal` and `internal/canary` are split out, because each is reused by more
 than one package and is easier to fuzz on its own. Committed docs live in `design/`
 (`docs/` holds working notes and is gitignored).
@@ -513,7 +521,8 @@ One code path for every wipe: the TUI and fleet mode add no wipe logic of their 
   3. It runs the batch and prints one line per event, prefixed with the device.
   4. It signs the manifest.
 - **TUI (`tui.go`, bubbletea v1 + lipgloss).** A state machine over five screens: pick,
-  plan, confirm, run, done.
+  plan, confirm, run, done. Since M10 the order is pick, confirm, plan, run, done (see
+  below).
   - **Backend:** the model talks to a small `tuiBackend` interface. `liveTUI` plans with a
     dry-run `freshWipe` and runs with `runBatch`.
   - **Tests:** they drive the model with key messages and a fake backend, or the real
@@ -540,4 +549,39 @@ shunya tui ──┐                    ┌─ freshWipe ─ guards ─ plan ─
              ├─ runBatch (N ≤ P) ─┤             ─ verify (full | log seed)
 shunya fleet ┘                    └─ certifyAfter ─ certificate ─ POST /add
                      └─ writeManifest ─ manifest.Sign ─ POST /manifest
+```
+
+## Live image and Windows (Milestone 10)
+
+- **The image (`image/`, `design/IMAGE.md`).**
+  - `build.sh` runs in the lab VM: pinned Alpine packages (unpacked, not installed), the release binaries, and `mkinitramfs`, which writes the initramfs through `internal/cpio`.
+  - `mke2fs -d` builds the key and data partitions, and `xorriso` makes a hybrid ISO with them appended as partitions 2 and 3.
+  - Every timestamp is `SOURCE_DATE_EPOCH`, so `make image-repro` gets identical bytes.
+- **Boot-medium guard.**
+  - Init writes `/run/shunya/boot-device`. `device.EnumerateWith` reads it before the mounts and marks those disks PROTECTED; a malformed file fails closed.
+  - The guard is plain enumeration logic, so the lab VM tests, the TUI and the ISO all run the same code.
+- **Confirm before plan.** The TUI's screens now run pick → confirm → plan → run.
+  - `tuiBackend.Plan(d, confirm)` gets the typed text. A release build's dry run can then open the device with the confirmation and identify it (NVMe Identify).
+  - The plan is still pinned for the run.
+- **Windows.** The pieces are layered so that only thin wrappers are OS-specific:
+
+  | Layer | File(s) | Build |
+  |---|---|---|
+  | Pluggable enumeration: `backend.Env.Enumerate` (`Env.Report()`) | `internal/backend` | all; used by guard, `list` and TUI on every OS |
+  | Decoding: `device.EnumerateWindows(System, []WinDisk, []WinVolume)` | `internal/device/windows.go` | all; unit-tested |
+  | Collecting the raw IOCTL outputs | `internal/device/enumerate_windows.go`, `internal/winstorage/sys_windows.go` | windows |
+  | `Block`: identification only | `internal/backend/block_windows.go` | windows |
+
+  - The `Block` runs ATA commands through `IOCTL_ATA_PASS_THROUGH`, translated by `winata` from the same SAT CDB the allowlist (`CheckATA`) checks.
+  - It runs NVMe Identify through the protocol-specific property query.
+  - It refuses `--execute` and every mutating command: Windows lists and identifies; the live image wipes.
+  - `winata` cannot import `ata` (ata → backend → winata), so it reads the CDB fields itself. A test and a fuzz target check it against `ata.DecodeCDB`.
+
+```
+image/build.sh (lab VM) ── packages.lock ─ tar ─┐
+                         release shunya ────────┼─ mkinitramfs ─ initramfs.gz ─┐
+                         image/init ────────────┘                              ├─ xorriso ─ shunya-live.iso
+                         mke2fs -d ── SHUNYA-KEYS, SHUNYA-DATA ────────────────┘
+boot: isolinux ─ kernel ─ init ─ blkid labels ─ /run/shunya/boot-device ─ mount /keys (ro), /data
+                                                                         └─ shunya tui ─ runBatch (M9)
 ```

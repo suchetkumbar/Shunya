@@ -9,6 +9,7 @@
 #   lab.sh push SRC DST / pull SRC DST   copy files in/out (scp)
 #   lab.sh test     push binaries + probe, run them, pull results to lab/results/
 #   lab.sh demo     push the lab builds and run the Milestone 9 demo (TUI) in the VM
+#   lab.sh image    build the live image (ISO) in the VM; outputs in lab/images/live/
 #   lab.sh down     stop the VM
 #   lab.sh reset    down + delete boot overlay and targets (base image kept)
 #
@@ -216,6 +217,36 @@ cmd_demo() {
   fi
 }
 
+# Build the live image inside the VM (image/build.sh), as the unprivileged VM user. The
+# outputs (ISO files, BUILDINFO.TXT, SHA256SUMS) land in lab/images/live/ (gitignored).
+# LOCK=print prints packages.lock lines instead; PROVISION=lab adds the lab-test ISO;
+# IMAGE_OUT=DIR (under lab/images/) picks another output directory.
+cmd_image() {
+  is_running || die "VM not running (make lab-up)"
+  local w=/home/$VM_USER/image out="${IMAGE_OUT:-$IMG_DIR/live}" epoch
+  local rel="$REPO_DIR/bin/release-linux-amd64" tool="$REPO_DIR/bin/tools/mkinitramfs"
+  [ -x "$rel/shunya" ] && [ -x "$rel/shunya-verify" ] && [ -x "$tool" ] || die "missing release binaries or mkinitramfs (make image)"
+  case "$(readlink -f "$out")" in "$(readlink -f "$IMG_DIR")"/*) ;; *) die "IMAGE_OUT must be under lab/images" ;; esac
+  epoch="${SOURCE_DATE_EPOCH:-$(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null || true)}"
+  [ -n "$epoch" ] || die "no SOURCE_DATE_EPOCH and no git history to take it from"
+  # Build tool in the VM only (the ISO writer); e2fsprogs is already there.
+  cmd_run "for i in 1 2 3; do apk add --quiet $IMAGE_BUILD_PACKAGES && break; sleep 3; done" || die "apk add failed in the VM"
+  cmd_run "rm -rf $w && mkdir -p $w/image && chown -R $VM_USER $w"
+  cmd_push "$rel/shunya" "$w/shunya"
+  cmd_push "$rel/shunya-verify" "$w/shunya-verify"
+  cmd_push "$tool" "$w/mkinitramfs"
+  local f
+  for f in build.sh init isolinux.cfg packages.lock modules.list; do cmd_push "$REPO_DIR/image/$f" "$w/image/$f"; done
+  # shellcheck disable=SC2046
+  printf '%s\n' "SOURCE_DATE_EPOCH=$epoch LOCK=${LOCK:-} PROVISION=${PROVISION:-} sh $w/image/build.sh $w" |
+    ssh $(ssh_opts) "$VM_USER@127.0.0.1" 'sh -s' || die "image build failed"
+  [ "${LOCK:-}" = print ] && return 0
+  rm -rf "$out"; mkdir -p "$out"
+  cmd_pull "$w/out/." "$out"
+  log "live image in $out"
+  (cd "$out" && sha256sum -c SHA256SUMS >&2)
+}
+
 cmd_test() {
   is_running || die "VM not running (make lab-up)"
   # bin/lab holds the token-bearing lab builds (make build-lab); they never leave the lab.
@@ -288,7 +319,8 @@ case "${1:-}" in
   pull)   shift; cmd_pull "$@" ;;
   test)   cmd_test ;;
   demo)   cmd_demo ;;
+  image)  cmd_image ;;
   down)   cmd_down ;;
   reset)  cmd_reset ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

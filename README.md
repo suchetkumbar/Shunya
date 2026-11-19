@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 9 (TUI, one-click and fleet mode).** `shunya tui` is a full-screen picker → plan → typed confirmation → live progress → certificate flow; `--simple` is a one-click mode for non-technical users (recommended method, one confirmation, large status text). `shunya fleet` and the TUI wipe several disks in parallel and sign a batch manifest, logged like the certificates; failures come with a plain what-happened / why / what-to-do explanation. `design/DEMO.md` reproduces the lab demo in minutes. Since Milestone 8, certificates go into an append-only Merkle-tree log (C2SP checkpoints and tiles); `shunya-verify serve` is the log and a recycler page the QR code leads to, and `shunya-verify audit` catches a log that rewrites its past. Sampled verification takes its seed from the log after the wipe, so the operator can't choose it. A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
+> **Status: Milestone 10 (bootable offline image, Windows).** `make image` builds a live ISO (USB stick or CD) in the lab VM, byte-identical across builds: it boots, protects its own medium, and wipes disks from the TUI with journals and certificates kept on the stick (`design/IMAGE.md`). On Windows, Shunya lists and identifies disks (ATA and NVMe) but never writes to them; that code is compiled and its decoders tested, not run. Milestone 9: `shunya tui` is a full-screen picker → typed confirmation → plan → live progress → certificate flow; `--simple` is a one-click mode for non-technical users (recommended method, one confirmation, large status text). `shunya fleet` and the TUI wipe several disks in parallel and sign a batch manifest, logged like the certificates; failures come with a plain what-happened / why / what-to-do explanation. `design/DEMO.md` reproduces the lab demo in minutes. Since Milestone 8, certificates go into an append-only Merkle-tree log (C2SP checkpoints and tiles); `shunya-verify serve` is the log and a recycler page the QR code leads to, and `shunya-verify audit` catches a log that rewrites its past. Sampled verification takes its seed from the log after the wipe, so the operator can't choose it. A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -11,6 +11,7 @@ India Hackathon 2025, problem SIH25070.
 - Verification samples chosen so the operator can't predict them.
 - Signed certificates (JSON + PDF + QR) recorded in an append-only transparency log.
 - One-click mode and fleet mode (Milestone 9); an offline bootable image (Milestone 10).
+- Windows: list and identify disks (Milestone 10); wiping a Windows machine's disks is done from the live image.
 
 ## Layout
 See `design/ARCHITECTURE.md`. Safety rules: `design/SAFETY.md`. Levels and what each
@@ -128,7 +129,7 @@ shunya cert submit --log http://127.0.0.1:8080 --log-key $D/log/log.vkey CERT.js
 ### TUI, one-click mode and fleet mode (Milestone 9)
 ```sh
 shunya tui --journal-dir $D/batch --key $D/station.key --station-cert $D/station.cert.json \
-    [--log URL --log-key K] [--image F]... [DEVICE...]       # pick, plan, confirm, watch, certificates
+    [--log URL --log-key K] [--image F]... [DEVICE...]       # pick, confirm, plan, watch, certificates
 shunya tui --simple --journal-dir $D --key $D/station.key ... # one disk, recommended method, big text
 shunya list --fingerprints > approved.txt                    # edit: keep only the disks to wipe
 shunya fleet --execute --approved approved.txt --yes-really --journal-dir $D/batch \
@@ -153,6 +154,19 @@ shunya-verify manifest --root R/root.pub --revocations R/revocations.json --cert
   frozen ATA drive, a mounted disk, the lab lock, an unreachable log or a revoked station.
 - **Demo:** `design/DEMO.md` (`make lab-up && make lab-demo`).
 
+### Live image and Windows (Milestone 10)
+```sh
+make lab-up && make image        # lab/images/live/shunya-live.iso (built in the VM)
+make image-repro                 # two clean builds: identical binaries and ISO
+make lab-iso-test                # boot it in QEMU: protects itself, wipes 3 disks, certificates verify
+```
+- **What it is:** a hybrid ISO for a USB stick or a CD. It runs from RAM, holds the release `shunya` and `shunya-verify`, and starts the TUI. Partition 2 (`SHUNYA-KEYS`) holds the station key and certificate, mounted read-only. Partition 3 (`SHUNYA-DATA`) keeps every session's journals, certificates and manifests.
+- **Protection:** the medium it booted from is PROTECTED in every build, mounted or not. Booted as a CD, it keeps the data in RAM and says so.
+- **Reproducible:** packages pinned by SHA-256 (`image/packages.lock`), fixed timestamps, deterministic initramfs (`image/mkinitramfs`). `BUILDINFO.TXT` lists every input.
+- **Limits:** BIOS boot only (no UEFI yet); a kernel for virtual machines (`linux-virt`); tested in QEMU, not on a real machine. See `design/IMAGE.md`.
+- **Windows:** `shunya list` and `guard` read the storage IOCTLs. In a release build, `plan` and the ATA/NVMe identify commands can reach the drive (`\\.\PhysicalDriveN`, with `--confirm`); a dev build's lab lock refuses every Windows disk. Wiping and writing are refused, but image files can still be wiped. None of it has been run on Windows (no Windows VM; the developer's machine is off limits).
+- **TUI order:** the TUI now asks for the confirmations *before* it plans, so a release build may identify the drive and pick its firmware erase.
+
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):
 
@@ -171,6 +185,7 @@ the Windows-mounted repo drive (`/mnt/d`, 9p) ran at 184 MB/s.
 Destructive tests run only inside a disposable QEMU/KVM VM whose disks are image files:
 ```sh
 make lab-up && make lab-test && make lab-down
+make lab-iso-test   # the live ISO in QEMU (from WSL, image files only)
 ```
 See `design/LAB_CAPABILITIES.md` for what the lab can and cannot emulate.
 

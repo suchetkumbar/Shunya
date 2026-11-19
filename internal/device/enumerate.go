@@ -2,6 +2,7 @@ package device
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -82,6 +83,18 @@ func EnumerateWith(fsys fs.FS, opts Options) (*Report, error) {
 				add(d, chain)
 			}
 		})
+	}
+	// The live image's boot medium first, so its reason leads the list.
+	boot, err := readBootDevices(r)
+	if err != nil {
+		return nil, err
+	}
+	for _, dev := range boot {
+		name, ok := g.byDev[dev]
+		if !ok {
+			return nil, fmt.Errorf("%s names %s, which is not a block device here; the live system's boot medium cannot be protected, so nothing is offered for wiping (was it unplugged?)", "/"+BootDeviceFile, dev)
+		}
+		use(name, func(chain []string) string { return "boot medium of this Shunya live system" + via(chain) }, true, nil)
 	}
 	for _, m := range mounts {
 		name, ok := g.byDev[m.Dev]
@@ -292,6 +305,35 @@ func readMounts(r *sysfs.Reader, rep *Report) ([]nsMount, error) {
 		_ = add(e, false, false)
 	}
 	rep.System.MountNamespaces = len(seen)
+	return out, nil
+}
+
+// BootDeviceFile is where the Shunya live image's init records the device numbers of
+// the medium it booted from (relative to "/"): one MAJOR:MINOR per line, "#" comments.
+const BootDeviceFile = "run/shunya/boot-device"
+
+// readBootDevices reads BootDeviceFile. A missing file means "not the live image"; any
+// unreadable content is an error, because the boot medium could then be any disk.
+func readBootDevices(r *sysfs.Reader) ([]sysfs.DevNum, error) {
+	b, err := r.Bytes(BootDeviceFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read /%s: %w", BootDeviceFile, err)
+	}
+	var out []sysfs.DevNum
+	for i, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		d, err := sysfs.ParseDevNum(line)
+		if err != nil {
+			return nil, fmt.Errorf("/%s line %d: %w", BootDeviceFile, i+1, err)
+		}
+		out = append(out, d)
+	}
 	return out, nil
 }
 

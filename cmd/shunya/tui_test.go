@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,9 +92,18 @@ type fakeBE struct {
 	devs      []tuiDevice
 	cancelled bool
 	hold      chan struct{} // if set, Start waits for it before finishing
+
+	mu           sync.Mutex
+	planConfirms map[string]string // path → the confirmation its plan was made with
 }
 
-func (f *fakeBE) Plan(d tuiDevice) planInfo {
+func (f *fakeBE) Plan(d tuiDevice, confirm string) planInfo {
+	f.mu.Lock()
+	if f.planConfirms == nil {
+		f.planConfirms = map[string]string{}
+	}
+	f.planConfirms[d.path] = confirm
+	f.mu.Unlock()
 	if p, ok := f.plans[d.path]; ok {
 		return p
 	}
@@ -147,12 +157,15 @@ func TestTUIFlow(t *testing.T) {
 	press(t, m, "down", "space", "down", "space", "down", "space")
 	mustView(t, m, "[x] /dev/vdb", "[x] /dev/sdb", "[x] /dev/nvme0n1")
 	press(t, m, "enter")
-	if m.scr != scrPlan {
+	// Confirmation comes first: release builds may only identify a drive (NVMe
+	// Identify) once the operator has confirmed it.
+	if m.scr != scrConfirm {
 		t.Fatalf("screen %d", m.scr)
 	}
-	mustView(t, m, "PLAN — nothing has been written yet", "nvme-format-user-data-erase — NIST SP 800-88 Purge", "method overwrite — NIST SP 800-88 Clear")
-	press(t, m, "enter")
 	mustView(t, m, "CONFIRM 1 of 3", "SHUNYA-VIRTIO-01", "LAST 4 CHARACTERS")
+	if len(be.planConfirms) != 0 {
+		t.Fatal("planned before confirmation")
+	}
 	// A wrong confirmation starts nothing and says so.
 	press(t, m, "0", "0", "0", "0", "enter")
 	mustView(t, m, "is not the end of the serial number. Nothing was wiped")
@@ -167,7 +180,24 @@ func TestTUIFlow(t *testing.T) {
 	mustView(t, m, "CONFIRM 2 of 3", "SHUNYA-SATA-HDD-01")
 	press(t, m, "D", "-", "0", "1", "enter")
 	press(t, m, "E", "-", "0", "1", "enter")
-	if len(be.started) != 1 || strings.Join(be.started[0], ",") != "o-01,D-01,E-01" {
+	// The plan: made with each disk's own confirmation, and nothing starts yet.
+	if m.scr != scrPlan || len(be.started) != 0 {
+		t.Fatalf("screen %d, started %v", m.scr, be.started)
+	}
+	if got := be.planConfirms; got["/dev/vdb"] != "o-01" || got["/dev/sdb"] != "D-01" || got["/dev/nvme0n1"] != "E-01" {
+		t.Fatalf("plans made with confirmations %v", got)
+	}
+	mustView(t, m, "PLAN — nothing has been written yet", "nvme-format-user-data-erase — NIST SP 800-88 Purge", "method overwrite — NIST SP 800-88 Clear")
+	press(t, m, "esc") // back to the list: confirmations and plans are discarded
+	if m.scr != scrPick {
+		t.Fatalf("esc on the plan: screen %d", m.scr)
+	}
+	press(t, m, "enter")
+	if m.scr != scrConfirm || m.confIdx != 0 || len(m.plans) != 0 {
+		t.Fatalf("re-entry kept old confirmations: screen %d idx %d plans %d", m.scr, m.confIdx, len(m.plans))
+	}
+	press(t, m, "O", "-", "0", "1", "enter", "D", "-", "0", "1", "enter", "E", "-", "0", "1", "enter", "enter")
+	if len(be.started) != 1 || strings.Join(be.started[0], ",") != "O-01,D-01,E-01" {
 		t.Fatalf("started with %v", be.started)
 	}
 	if be.devs[2].method != engine.MethodNVMeFormatUserData || be.devs[0].method != engine.MethodOverwrite {
@@ -183,6 +213,7 @@ func TestTUIRefusedPlanBlocks(t *testing.T) {
 	be := &fakeBE{plans: map[string]planInfo{"/dev/vdb": {err: "PRECONDITIONS NOT MET: frozen", explain: Explain(FrozenText())}}}
 	m := newTUIModel(fakeDevs(), be, false)
 	press(t, m, "enter") // nothing selected: the disk under the cursor
+	press(t, m, "O", "-", "0", "1", "enter")
 	mustView(t, m, "CANNOT WIPE THIS DISK", "What to do:", "Suspend the computer")
 	press(t, m, "enter")
 	if m.scr != scrPlan {
@@ -200,9 +231,8 @@ func TestTUISimpleAndStop(t *testing.T) {
 	be := &fakeBE{hold: make(chan struct{})}
 	m := newTUIModel(fakeDevs(), be, true)
 	mustView(t, m, "one-click wipe", "Which disk do you want to erase?")
-	press(t, m, "enter")
-	mustView(t, m, "█", "READY", "overwrite every sector with random data", "cannot be undone")
-	press(t, m, "enter", "O", "-", "0", "1")
+	press(t, m, "enter", "O", "-", "0", "1", "enter")
+	mustView(t, m, "█", "READY", "overwrite every sector with random data", "cannot be undone", "Press Enter to start")
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	// The wipe runs (held by the fake): the big status shows its progress.
 	msg := cmd()
@@ -284,16 +314,19 @@ func TestTUILiveImages(t *testing.T) {
 		press(t, m, "down")
 	}
 	press(t, m, "space", "down", "space", "down", "space", "enter")
-	if m.scr != scrPlan || len(m.order) != 3 {
-		t.Fatalf("plan screen with %d disks:\n%s", len(m.order), m.View())
+	if m.scr != scrConfirm || len(m.order) != 3 {
+		t.Fatalf("confirm screen with %d disks:\n%s", len(m.order), m.View())
 	}
-	mustView(t, m, "method overwrite — NIST SP 800-88 Clear", "full read-back")
-	press(t, m, "enter")
 	for range 3 {
 		d := m.devs[m.order[m.confIdx]]
 		press(t, m, strings.Split(d.last4(), "")...)
 		press(t, m, "enter")
 	}
+	if m.scr != scrPlan {
+		t.Fatalf("screen %d:\n%s", m.scr, m.View())
+	}
+	mustView(t, m, "method overwrite — NIST SP 800-88 Clear", "full read-back")
+	press(t, m, "enter")
 	if m.scr != scrDone {
 		t.Fatalf("screen %d:\n%s", m.scr, m.View())
 	}

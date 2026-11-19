@@ -16,6 +16,17 @@ import (
 type Env struct {
 	FS      fs.FS
 	Protect []device.Protect
+	// Enumerate, if set, replaces the sysfs enumeration of FS (Windows, which has no
+	// sysfs; FS then holds only the DMI strings the lab lock reads).
+	Enumerate func() (*device.Report, error)
+}
+
+// Report enumerates the devices of env.
+func (env Env) Report() (*device.Report, error) {
+	if env.Enumerate != nil {
+		return env.Enumerate()
+	}
+	return device.EnumerateWith(env.FS, device.Options{Protect: env.Protect})
 }
 
 // Verdict is the outcome of Check. Allowed is true only when Reasons is empty.
@@ -34,6 +45,9 @@ var reDevName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_:.-]*$`)
 // device so that what is shown, checked and opened is the same thing.
 func deviceName(p string) (string, error) {
 	name := strings.TrimPrefix(p, "/dev/")
+	if n, ok := strings.CutPrefix(p, `\\.\`); ok { // Windows: \\.\PhysicalDriveN
+		name = n
+	}
 	if !reDevName.MatchString(name) || strings.Contains(name, "..") {
 		return "", fmt.Errorf("invalid device %q: give a kernel device name such as /dev/sdb", p)
 	}
@@ -48,11 +62,14 @@ func Check(env Env, path string) (*Verdict, error) {
 	if err != nil {
 		return nil, err
 	}
-	rep, err := device.EnumerateWith(env.FS, device.Options{Protect: env.Protect})
+	rep, err := env.Report()
 	if err != nil {
 		return nil, fmt.Errorf("guard: cannot enumerate devices: %w", err)
 	}
 	v := &Verdict{Path: "/dev/" + name, Build: BuildKind}
+	if strings.HasPrefix(path, `\\.\`) {
+		v.Path = path
+	}
 	refuse := func(format string, a ...any) { v.Reasons = append(v.Reasons, fmt.Sprintf(format, a...)) }
 
 	var d *device.Device

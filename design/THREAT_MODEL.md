@@ -64,6 +64,13 @@
 | T49 | A batch hides its failures: the station shows only the certificates that succeeded | M9: the signed batch manifest lists every disk tried, with its outcome; it is logged (entry 0x04), and `shunya-verify manifest --certs` reports missing or mismatched certificates. A station can still skip writing a manifest at all | partly mitigated (M9) |
 | T50 | Misleading or missing error guidance makes operators work around a guard (e.g. forcing a frozen drive) | M9: plain explanations for known refusals, with the safe remedy only; Shunya never applies a workaround itself (suspend/resume, hot-plug) | mitigated (M9) |
 | T51 | One-click mode hides what is done | M9: the one-click screen still shows the method (in plain words and by name), its NIST level and the verification. The certificate is the same as in expert mode | mitigated (M9) |
+| T52 | The live image wipes its own boot medium (and with it the journals and the station key) | M10: init records the medium's device numbers at boot; enumeration marks that disk PROTECTED in every build, mounted or not; unreadable records fail closed; no TUI starts without exactly one Shunya medium. Tested in QEMU (`TestISOBootUSBWipe`) | mitigated (M10) |
+| T53 | A tampered image (a modified `shunya` that fakes wipes) passed off as the official one | M10: reproducible image: anyone can rebuild from the commit and compare the ISO's SHA-256; every input is listed in `BUILDINFO.TXT`; certificates carry the `shunya` binary's hash, which matches the image build. Signing published ISOs is not done yet | partly mitigated (M10) |
+| T54 | A changed upstream package (mirror compromise, re-issued version) slips into the image | M10: every package pinned by version and SHA-256 in `image/packages.lock` (first recorded from a signature-checked `apk fetch`); a mismatch stops the build | mitigated (M10) |
+| T55 | A lost or stolen Shunya stick gives away the station key | M10: the key partition is plain ext4 (decision for M10); mitigation is revocation (`shunya keys revoke`, M7) and short station-certificate lifetimes. An encrypted key partition is future work | accepted (M10) |
+| T56 | The operator boots with two Shunya sticks, or swaps the stick during a session | M10: two media at boot: init stops. A stick swapped after boot is not protected as the boot medium (it is an ordinary disk, confirmation still required); the journals and keys of the boot medium stay mounted, so removing it breaks the session visibly | partly mitigated (M10) |
+| T57 | Windows code that was never run misbehaves on a real disk | M10: on Windows Shunya never writes to a disk (OpenBlock refuses `--execute`, mutating commands are refused), dev builds are refused by the lab lock, and the decoders are fuzzed. The remaining risk is a wrong listing, not a wrong wipe | mitigated (M10), untested on Windows |
+| T58 | A release build plans with less information than it could have (NVMe planned as an overwrite) | M10: the TUI asks for the confirmations before planning, so release builds may identify the drive first and choose its firmware erase; the plan is still pinned | mitigated (M10) |
 
 ## Out of scope
 - Physical destruction (NIST "Destroy").
@@ -101,3 +108,8 @@
   changed afterwards. It proves completeness only for the batches the station did
   manifest, and it adds no evidence about any one disk beyond that disk's certificate.
   The TUI and fleet mode change who selects and confirms; they add no new way to write.
+- **M10: what the live image adds.** A trusted environment: the operator's machine runs
+  only what is in the ISO, and anyone can rebuild that ISO from the commit and get the
+  same bytes. It does not make the hardware honest: the drive's firmware still decides
+  what a Format or Sanitize does (T10, T28), and a machine with a hostile BIOS or
+  hypervisor is out of scope.

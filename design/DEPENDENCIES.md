@@ -78,6 +78,31 @@ Lab VM packages added in M7, used only by `TestLabCertificate` to check Shunya's
 QR output independently: `qpdf`, `poppler-utils` (pdftotext, pdftoppm), `zbar` (zbarimg)
 and `imagemagick`, whose image coders zbarimg needs (VM only, 46 MiB in all).
 
+## Milestone 10: no new Go modules; what the live image contains
+The Windows code uses `golang.org/x/sys/windows` and `x/sys/windows/registry`, which are in the
+`golang.org/x/sys` module already listed. The cpio writer (`internal/cpio`) and the
+initramfs builder (`image/mkinitramfs`, a build tool that is not shipped) are in-tree and use
+only the standard library.
+
+**Inside the ISO** (redistributed when the ISO is). These are pinned in `image/packages.lock`
+and unpacked with `tar`, not installed:
+
+| Package (Alpine 3.24) | Version | What goes into the image | Licence |
+|---|---|---|---|
+| `linux-virt` | 6.18.64-r0 | the kernel (`vmlinuz-virt`) and the storage, USB and ext4 modules in `image/modules.list` | GPL-2.0 |
+| `busybox-static` | 1.37.0-r31 | `/bin/busybox` (init's shell and tools) | GPL-2.0 |
+| `syslinux` | 6.04_pre1-r19 | `isolinux.bin`, `ldlinux.c32`, the isohybrid MBR | GPL-2.0 |
+
+GPL-2.0 obligations apply to anyone who distributes the ISO. They must offer the
+corresponding source, which is Alpine's aports for these package versions
+(`https://gitlab.alpinelinux.org/alpine/aports`) and the upstream tarballs it references.
+A public release must ship that offer, or the sources, with the ISO. Shunya's own code
+stays MIT.
+
+**Build tools in the lab VM only** (not in the image): `xorriso` 1.5.8 (GPL-3.0) writes
+the ISO, and `e2fsprogs` (`mke2fs`, GPL-2.0) builds the two ext4 partitions. Their
+versions are recorded in the ISO's `BUILDINFO.TXT`, because they affect its bytes.
+
 ## Test data from other projects
 
 | Data | Source | Licence | Where |

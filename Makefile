@@ -19,7 +19,8 @@ TAGSETS := "" release labtest
 LINTTAGS := $(TAGSETS) brokenwipe
 
 .PHONY: all build build-linux build-release build-windows windows-check build-lab repro test test-big test-broken bench race fuzz vet \
-        staticcheck vulncheck lint fmt-check ci clean lab-images lab-up lab-shell lab-test lab-demo lab-down lab-reset
+        staticcheck vulncheck lint fmt-check ci clean lab-images lab-up lab-shell lab-test lab-demo lab-down lab-reset \
+        build-image-tools image image-lock image-repro lab-iso-test
 
 all: lint test build
 
@@ -139,3 +140,33 @@ lab-down:
 	@bash lab/lab.sh down
 lab-reset:
 	@bash lab/lab.sh reset
+
+# ---- Live image (Milestone 10, design/IMAGE.md). Built inside the lab VM, never on the host ----
+# mkinitramfs is a build tool (it runs in the VM), not part of the image.
+build-image-tools:
+	@mkdir -p $(BIN)/tools
+	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -ldflags '$(LDFLAGS)' -o $(BIN)/tools/mkinitramfs ./image/mkinitramfs
+# The release ISO in lab/images/live/ (needs make lab-up).
+image: build-release build-image-tools
+	@bash lab/lab.sh image
+# Print packages.lock lines for the newest Alpine packages (review, then paste).
+image-lock: build-release build-image-tools
+	@LOCK=print bash lab/lab.sh image
+# Two image builds from scratch (each with freshly built binaries and empty Go caches)
+# must give identical binaries and identical ISO files.
+image-repro: build-image-tools
+	@for i in 1 2; do \
+	  c=$$(mktemp -d); \
+	  for cmd in $(CMDS); do GOCACHE=$$c GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS_REPRO) -tags release -ldflags '$(LDFLAGS)' -o $(BIN)/release-linux-amd64/$$cmd ./cmd/$$cmd || exit 1; done; \
+	  chmod -R u+w $$c; rm -r $$c; \
+	  IMAGE_OUT=lab/images/repro-$$i bash lab/lab.sh image || exit 1; \
+	  sha256sum $(BIN)/release-linux-amd64/* > lab/images/repro-$$i/BINARIES.SHA256; \
+	done
+	@cat lab/images/repro-1/BINARIES.SHA256 lab/images/repro-1/SHA256SUMS
+	@cmp lab/images/repro-1/BINARIES.SHA256 lab/images/repro-2/BINARIES.SHA256 && echo "binaries: identical in both builds"
+	@cmp lab/images/repro-1/shunya-live.iso lab/images/repro-2/shunya-live.iso && echo "shunya-live.iso: byte-identical in both builds"
+# Boot the ISO in QEMU (from WSL, image files only) and wipe disks from its TUI.
+lab-iso-test: build-release build-image-tools build-linux
+	@PROVISION=lab bash lab/lab.sh image
+	@bash lab/lab.sh down
+	$(GO) test -count=1 -tags labiso -timeout 30m -v ./lab/iso

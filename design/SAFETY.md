@@ -94,10 +94,29 @@ machine Shunya runs on. They override every other requirement.
 42. **What you see is what runs.** The method on the TUI's plan screen is pinned for the run. One Ctrl+C only asks; a second one stops the wipes, which can be resumed from their journals.
 43. **Pseudo-terminals only in the lab.** The TUI acceptance test opens `/dev/ptmx` to type into the TUI. It is a lab test, built only with `-tags labtest` and run only inside the VM (`inLab`). No host test opens a terminal device.
 
+### Milestone 10 additions (live image, Windows)
+44. **The live image never wipes its own medium.** At boot, init records the device numbers of every partition labelled `SHUNYA-LIVE`, `SHUNYA-KEYS` or `SHUNYA-DATA` in `/run/shunya/boot-device`. Enumeration marks those disks PROTECTED in every build, mounted or not.
+    - A malformed file, or a device number that is not a block device, makes enumeration fail closed: nothing is offered.
+    - Init starts no TUI if it finds no Shunya medium, or more than one.
+    - A Shunya stick plugged in after boot is not in the file, and is treated like any disk (`IMAGE.md`, Limitations).
+45. **The image is built in the lab VM only.** `image/build.sh` runs there as an unprivileged user, on image files only:
+    - `mke2fs` builds the ext4 partitions inside the VM; it is never run on the host.
+    - The initramfs's device nodes are header-only cpio entries; nothing creates or opens a device.
+    - Packages are unpacked with `tar`, never installed. The only package installed in the VM is the ISO writer, `xorriso`.
+46. **Pinned inputs.** Every package in the image is pinned by version and SHA-256 (`image/packages.lock`); a mismatch stops the build. The binaries are the release builds, reproducible (`make image-repro`).
+47. **ISO boot tests use image files only.** `lab/iso` starts QEMU from WSL. Every disk it attaches is checked to be a regular file under `lab/images/`. Without `/dev/kvm` the test is SKIPPED with a reason; it never falls back. The lab-test ISO carries a throwaway station key and stays in `lab/images/`, which is gitignored.
+48. **Windows code never runs on the host.** The Windows enumeration, ATA pass-through and NVMe Identify are compiled for Windows (`make windows-check`, staticcheck for `GOOS=windows`). Their decoders are tested on Linux with byte layouts built from the SDK headers.
+    - No Windows binary or Windows test binary is run on the developer's machine. Running one would open `\\.\PhysicalDriveN`.
+    - On Windows, Shunya identifies disks only. `OpenBlock` refuses `--execute`, `WriteAt` and every mutating ATA or NVMe command; image files can still be wiped.
+    - The Windows enumeration errs towards caution: a disk with partitions but no visible volume is IN-USE, and a system volume whose disk cannot be identified fails the enumeration.
+49. **Confirm, then plan.** The TUI asks for the typed confirmations before it plans, in every build. A release build may then send read-only identify commands (such as NVMe Identify) for the plan. The plan is pinned for the run (rule 42), and nothing is written before Enter on the plan screen.
+
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is
 treated as outside its intent. `/dev/urandom` is no longer read: the lab token comes
 from `openssl rand`, which uses `getrandom(2)`. The user was told about this.
+Inside the lab VM, `image/build.sh` reads `/dev/urandom` for the throwaway lab-test root's
+passphrase. That is the VM's device, not the host's.
 
 ## 5. Honesty rules
 - Never claim a NIST 800-88 level the method cannot justify (an overwrite of flash media is **Clear** with a residual-risk disclosure, never Purge).
@@ -115,3 +134,5 @@ from `openssl rand`, which uses `getrandom(2)`. The user was told about this.
 | 2026-11-17 | apt: `gcc libc6-dev` (race detector only; binaries stay `CGO_ENABLED=0`) | WSL Debian |
 | 2026-11-17 | Go module `golang.org/x/sys` v0.50.0 (pre-approved) | Go module cache |
 | 2026-11-19 | Go modules `charmbracelet/bubbletea` v1.3.10 and `lipgloss` v1.1.0 (pre-approved TUI library), with 15 indirect modules (`DEPENDENCIES.md`) | Go module cache |
+| 2026-11-19 | Alpine packages for the live image, fetched in the lab VM and not installed: `linux-virt` 6.18.64-r0 (42.5 MB), `syslinux` 6.04_pre1-r19 (2.0 MB), `busybox-static` 1.37.0-r31 (0.6 MB); pinned in `image/packages.lock` | lab VM (`lab/images/` outputs) |
+| 2026-11-19 | `apk add xorriso` (with `libisoburn`, `libisofs`, `libburn`, 0.8 MB): the ISO writer for `image/build.sh` | lab VM only |

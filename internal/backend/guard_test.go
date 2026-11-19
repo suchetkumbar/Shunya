@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"shunya/internal/device"
 	"shunya/internal/sysfs"
@@ -117,5 +118,38 @@ func TestRefusalError(t *testing.T) {
 	err := error(&RefusalError{Path: "/dev/vda", Reasons: []string{"a", "b"}})
 	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "/dev/vda") || !strings.Contains(err.Error(), "a; b") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// On Windows the guard runs on the report from device.EnumerateWindows, with \\.\ paths.
+func TestGuardWindowsEnv(t *testing.T) {
+	sys := device.Report{Devices: []device.Device{
+		{Name: "PhysicalDrive0", Path: `\\.\PhysicalDrive0`, Status: device.StatusProtected, Reasons: []string{`Windows system volume C:\`},
+			Serial: "S1", Media: device.Media{Type: device.MediaNVMeSSD}, Fingerprint: device.Fingerprint{Value: "fp1:aa"}},
+		{Name: "PhysicalDrive2", Path: `\\.\PhysicalDrive2`, Status: device.StatusAvailable,
+			Serial: "4C530001230616118063", Media: device.Media{Type: device.MediaUSBFlash}, Fingerprint: device.Fingerprint{Value: "fp1:bb"}},
+	}}
+	env := Env{FS: fstest.MapFS{}, Enumerate: func() (*device.Report, error) { r := sys; return &r, nil }}
+	v, err := Check(env, `\\.\PhysicalDrive0`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Allowed || v.Path != `\\.\PhysicalDrive0` || !hasReason(v, "Windows system volume") {
+		t.Fatalf("%+v", v)
+	}
+	v, err = Check(env, `\\.\PhysicalDrive2`)
+	if err != nil || v.Device == nil || v.Device.Serial != "4C530001230616118063" {
+		t.Fatalf("%+v %v", v, err)
+	}
+	// Dev builds: the lab lock refuses (no QEMU DMI, no /etc/shunya-lab).
+	if BuildKind == "dev" && (v.Allowed || !hasReason(v, "lab lock")) {
+		t.Fatalf("dev build allowed a Windows disk: %+v", v)
+	}
+	if _, err := Check(env, `\\.\PhysicalDrive2\..\x`); err == nil {
+		t.Error("path with separators accepted")
+	}
+	env.Enumerate = func() (*device.Report, error) { return nil, errors.New("boom") }
+	if _, err := Check(env, `\\.\PhysicalDrive2`); err == nil {
+		t.Error("enumeration failure did not fail closed")
 	}
 }

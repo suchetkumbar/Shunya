@@ -29,11 +29,13 @@ make lab-demo    # builds the lab binaries, pushes them, and starts the demo in 
 Press Enter and the TUI opens on three disks of different kinds: virtio-blk, emulated SATA HDD and emulated NVMe.
 
 1. **Pick:** Space selects a disk, ↓ moves; select all three, then Enter.
-2. **Plan:** the screen shows each disk's method, NIST SP 800-88 level, estimate and
+2. **Confirm:** for each disk, type the last 4 characters of the serial shown on screen
+   (`E-01`, `D-01`, `O-01`), then Enter. A wrong entry is refused and nothing starts.
+3. **Plan:** the screen shows each disk's method, NIST SP 800-88 level, estimate and
    verification. The NVMe disk gets `nvme-format-user-data-erase` (the drive's own erase),
-   the other two an overwrite. Nothing has been written yet. Enter.
-3. **Confirm:** for each disk, type the last 4 characters of the serial shown on screen
-   (`O-01`, `D-01`, `E-01`), then Enter. A wrong entry is refused and nothing starts.
+   the other two an overwrite. Nothing has been written yet. Enter starts the wipes; Esc
+   goes back to the list. (Since Milestone 10 the plan comes after the confirmations, so
+   a release build may identify the drive before planning.)
 4. **Progress:** all three wipe at the same time, each with its own bar and phase:
    wiping → verifying → certificate issued → logged. Ctrl+C twice would stop them; the
    journals allow a resume.
@@ -88,3 +90,9 @@ SSD can reach Purge (see `NIST_MAPPING.md`); the lab cannot show that.
   lock. `TestTUILiveImages` runs it with three images.
 - **Lab tests:** `LAB_RUN='^TestLabTUI' make lab-test` runs both TUI acceptance tests on a
   real pseudo-terminal inside the VM.
+- **The live image (Milestone 10):** `make lab-up && make lab-iso-test` builds the ISO in
+  the VM and boots it in QEMU as a USB stick. The stick appears as PROTECTED ("boot medium
+  of this Shunya live system"). Three disks are wiped from its TUI over the serial console,
+  and the certificates it prints verify. This takes about 20 s once built. To watch it,
+  boot `lab/images/live/shunya-live.iso` with any QEMU command line that uses only image
+  files (see `lab/iso/iso_test.go`), and type `serial` at the `boot:` prompt.

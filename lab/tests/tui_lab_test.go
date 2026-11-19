@@ -168,10 +168,6 @@ func TestLabTUIFleet(t *testing.T) {
 	p.keys(t, keySpace, keyDown, keySpace, keyDown, keySpace)
 	at = p.waitFor(t, at, "[x]", 5*time.Second)
 	p.keys(t, keyEnter)
-	at = p.waitFor(t, at, "PLAN — nothing has been written yet", 10*time.Second)
-	at = p.waitFor(t, at, "nvme-format-user-data-erase — NIST SP 800-88", 30*time.Second)
-	time.Sleep(time.Second) // every plan in
-	p.keys(t, keyEnter)
 	serialRE := regexp.MustCompile(`Serial number: (\S+)`)
 	for i := 1; i <= 3; i++ {
 		at = p.waitFor(t, at, fmt.Sprintf("CONFIRM %d of 3", i), 10*time.Second)
@@ -186,6 +182,11 @@ func TestLabTUIFleet(t *testing.T) {
 		p.keys(t, strings.Split(serial[len(serial)-4:], "")...)
 		p.keys(t, keyEnter)
 	}
+	// Planned after the confirmations; nothing starts before Enter on the plan.
+	at = p.waitFor(t, at, "PLAN — nothing has been written yet", 10*time.Second)
+	at = p.waitFor(t, at, "nvme-format-user-data-erase — NIST SP 800-88", 30*time.Second)
+	time.Sleep(time.Second) // every plan in
+	p.keys(t, keyEnter)
 	at = p.waitFor(t, at, "WIPING 3 disk(s)", 20*time.Second)
 	at = p.waitFor(t, at, "RESULT — 3 disk(s)", 9*time.Minute)
 	elapsed := time.Since(start)
@@ -250,13 +251,13 @@ func TestLabTUISimple(t *testing.T) {
 	cmd := startTUI(t, p, "--simple", "--journal-dir", dir, "--key", key, disk)
 	at := p.waitFor(t, 0, "Which disk do you want to erase?", 20*time.Second)
 	p.keys(t, keyEnter)
-	at = p.waitFor(t, at, "READY", 10*time.Second)
-	at = p.waitFor(t, at, "cannot be undone", 30*time.Second)
-	p.keys(t, keyEnter)
 	at = p.waitFor(t, at, "LAST 4 CHARACTERS", 5*time.Second)
 	p.keys(t, "-", "0", "1", keyEnter) // wrong first: nothing starts
 	at = p.waitFor(t, at, "Nothing was wiped", 5*time.Second)
 	p.keys(t, "B", "-", "0", "1", keyEnter)
+	at = p.waitFor(t, at, "READY", 10*time.Second)
+	at = p.waitFor(t, at, "cannot be undone", 30*time.Second)
+	p.keys(t, keyEnter)
 	at = p.waitFor(t, at, "WIPING", 20*time.Second)
 	at = p.waitFor(t, at, "█", 5*time.Second)
 	at = p.waitFor(t, at, "Press Enter to exit", 6*time.Minute)

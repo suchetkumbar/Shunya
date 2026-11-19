@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"shunya/internal/sysfs"
 	"shunya/internal/sysfs/sysfstest"
@@ -106,7 +107,7 @@ func checkDevices(t *testing.T, r *Report, wants map[string]want) {
 				t.Errorf("%s: partitions %v, want %v", name, ps, w.partitions)
 			}
 		}
-		if d.Path != "/dev/"+name {
+		if d.Path != "/dev/"+name && d.Path != `\\.\`+name { // Windows: \\.\PhysicalDriveN
 			t.Errorf("%s: path %q", name, d.Path)
 		}
 	}
@@ -320,6 +321,67 @@ func TestEnumerateExtraProtect(t *testing.T) {
 		if d.Name == "sda" && (len(d.Partitions) != 1 || d.Partitions[0].DevNum != "8:1") {
 			t.Errorf("sda partitions %+v", d.Partitions)
 		}
+	}
+}
+
+// The Shunya live image records the medium it booted from in /run/shunya/boot-device
+// (one MAJOR:MINOR per line, a whole disk or a partition). That disk is PROTECTED even
+// when nothing on it is mounted, and in every build.
+func TestBootDeviceMarker(t *testing.T) {
+	fsys, err := sysfstest.Load(filepath.Join("testdata", "sysfs", "lab-vm.spec"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsys[BootDeviceFile] = &fstest.MapFile{Data: []byte("# written by the live image's init\n8:32\n259:0\n\n")}
+	r, err := Enumerate(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDevices(t, r, map[string]want{
+		"sdc": {transport: TransportUSB, media: MediaUSBFlash, status: StatusProtected, removable: true, virtual: true,
+			reasons: []string{"boot medium of this Shunya live system"}},
+		"nvme0n1": {transport: TransportNVMe, media: MediaNVMeSSD, status: StatusProtected, virtual: true,
+			reasons: []string{"boot medium of this Shunya live system"}},
+		"vdb": {transport: TransportVirtio, media: MediaVirtual, status: StatusAvailable, virtual: true},
+	})
+}
+
+// A partition number marks its whole disk.
+func TestBootDeviceMarkerPartition(t *testing.T) {
+	fsys, err := sysfstest.Load(filepath.Join("testdata", "sysfs", "lab-vm.spec"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsys[BootDeviceFile] = &fstest.MapFile{Data: []byte("253:2\n")}
+	r, err := Enumerate(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDevices(t, r, map[string]want{
+		"vda": {transport: TransportVirtio, media: MediaVirtual, status: StatusProtected, virtual: true,
+			reasons: []string{"boot medium of this Shunya live system via vda2"}},
+	})
+}
+
+// A marker that cannot be read fails closed: the boot medium might be any disk.
+func TestBootDeviceMarkerFailsClosed(t *testing.T) {
+	for _, bad := range []string{"8:32 extra\n", "sdc\n", "8:\n", "-1:0\n"} {
+		fsys, err := sysfstest.Load(filepath.Join("testdata", "sysfs", "lab-vm.spec"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fsys[BootDeviceFile] = &fstest.MapFile{Data: []byte(bad)}
+		// The line itself is rejected (not just the device it would name).
+		if _, err := Enumerate(fsys); err == nil || !strings.Contains(err.Error(), "boot-device line 1") {
+			t.Errorf("%q: want a boot-device line 1 error, got %v", bad, err)
+		}
+	}
+	// A device number that names no disk is an error too: the live image recorded a
+	// medium this enumeration cannot see, so its protection cannot be applied.
+	fsys, _ := sysfstest.Load(filepath.Join("testdata", "sysfs", "lab-vm.spec"))
+	fsys[BootDeviceFile] = &fstest.MapFile{Data: []byte("8:240\n")}
+	if _, err := Enumerate(fsys); err == nil || !strings.Contains(err.Error(), "8:240") {
+		t.Errorf("unknown device: want an error naming 8:240, got %v", err)
 	}
 }
 

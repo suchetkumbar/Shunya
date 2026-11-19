@@ -67,7 +67,9 @@ type planInfo struct {
 
 // tuiBackend is what the TUI needs from the rest of Shunya (faked in tests).
 type tuiBackend interface {
-	Plan(d tuiDevice) planInfo
+	// Plan is a dry run on d after the operator typed confirm, the end of its serial
+	// (release builds need it before they may send even a read-only NVMe Identify).
+	Plan(d tuiDevice, confirm string) planInfo
 	// Start runs the batch; the channel delivers devMsg values, then one doneMsg, then
 	// closes. Cancel stops the running wipes (resumable from their journals).
 	Start(devs []tuiDevice, confirms []string) <-chan tea.Msg
@@ -209,15 +211,10 @@ func (m *tuiModel) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.order) == 0 {
 				return m, nil
 			}
-			m.scr = scrPlan
-			var cmds []tea.Cmd
-			for _, i := range m.order {
-				if _, ok := m.plans[i]; !ok {
-					i, d := i, m.devs[i]
-					cmds = append(cmds, func() tea.Msg { return planMsg{i, m.be.Plan(d)} })
-				}
-			}
-			return m, tea.Batch(cmds...)
+			// Confirm first, then plan: the plan is made with the confirmations (so a
+			// release build may identify the drive), and it is the plan that runs.
+			m.scr, m.confIdx, m.typed, m.confErr, m.confirms = scrConfirm, 0, "", "", nil
+			m.plans = map[int]planInfo{}
 		}
 	case scrPlan:
 		switch s {
@@ -230,12 +227,12 @@ func (m *tuiModel) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !m.plansReady() {
 				return m, nil
 			}
-			m.scr, m.confIdx, m.typed, m.confErr, m.confirms = scrConfirm, 0, "", "", nil
+			return m, m.start()
 		}
 	case scrConfirm:
 		switch {
 		case s == "esc":
-			m.scr = scrPlan
+			m.scr = scrPick
 		case s == "backspace":
 			if m.typed != "" {
 				m.typed = m.typed[:len(m.typed)-1]
@@ -251,7 +248,13 @@ func (m *tuiModel) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.typed, m.confErr = "", ""
 			m.confIdx++
 			if m.confIdx == len(m.order) {
-				return m, m.start()
+				m.scr = scrPlan
+				cmds := make([]tea.Cmd, len(m.order))
+				for j, i := range m.order {
+					d, c := m.devs[i], m.confirms[j]
+					cmds[j] = func() tea.Msg { return planMsg{i, m.be.Plan(d, c)} }
+				}
+				return m, tea.Batch(cmds...)
 			}
 		case k.Type == tea.KeyRunes:
 			if len(m.typed) < 16 {
@@ -427,7 +430,8 @@ func (m *tuiModel) viewPick(b *strings.Builder) {
 		}
 		line := fmt.Sprintf("%s %-22s %-24s serial %-20s %-8s %8s", mark, d.label(), trunc(d.model, 24), trunc(orDash(d.serial), 20), d.media, d.size)
 		if d.why != "" {
-			line = stDim.Render(fmt.Sprintf("    %-22s %-24s PROTECTED: %s", d.label(), trunc(d.model, 24), trunc(d.why, 60)))
+			// why carries its own status (PROTECTED: …, IN-USE: …) from the guard.
+			line = stDim.Render(fmt.Sprintf("    %-22s %-24s %s", d.label(), trunc(d.model, 24), trunc(d.why, 72)))
 		}
 		if i == m.cursor {
 			line = stSel.Render(line)
@@ -453,10 +457,10 @@ func (m *tuiModel) viewPlan(b *strings.Builder) {
 		fmt.Fprintf(b, "How:      %s (%s, NIST SP 800-88 %s)\n", plainMethod(p.method), p.method, p.level)
 		fmt.Fprintf(b, "Check:    %s\nTime:     about %s\n\n", p.verify, p.estimate)
 		b.WriteString(stWarn.Render("Everything on this disk will be destroyed. This cannot be undone.") + "\n")
-		b.WriteString("Press Enter to continue, or Esc to choose another disk.\n")
+		b.WriteString("Press Enter to start, or Esc to choose another disk.\n")
 		return
 	}
-	b.WriteString("PLAN — nothing has been written yet. Enter: confirm, Esc: back.\n\n")
+	b.WriteString("PLAN — nothing has been written yet. Enter: start wiping, Esc: back to the disk list.\n\n")
 	for _, i := range m.order {
 		d := m.devs[i]
 		p, ok := m.plans[i]
@@ -498,7 +502,7 @@ func (m *tuiModel) viewConfirm(b *strings.Builder) {
 	if m.confErr != "" {
 		b.WriteString("\n" + stWarn.Render(m.confErr) + "\n")
 	}
-	b.WriteString("\n" + stDim.Render("Esc: back to the plan") + "\n")
+	b.WriteString("\n" + stDim.Render("Esc: back to the disk list. The plan comes next; nothing starts until you press Enter there.") + "\n")
 }
 
 func (m *tuiModel) viewRun(b *strings.Builder) {
@@ -614,9 +618,12 @@ type liveTUI struct {
 	cancel   context.CancelFunc
 }
 
-func (l *liveTUI) Plan(d tuiDevice) planInfo {
+func (l *liveTUI) Plan(d tuiDevice, confirm string) planInfo {
 	g := l.f
 	g.execute = false
+	if !d.isImage {
+		g.confirm = confirm
+	}
 	var res jobResult
 	g.result = &res
 	var out, errb bytes.Buffer
@@ -710,7 +717,7 @@ func tuiDevices(only, images []string, sector int) []tuiDevice {
 		want["/dev/"+strings.TrimPrefix(p, "/dev/")] = true
 	}
 	if env, err := backend.LiveEnv(); err == nil {
-		if rep, err := device.EnumerateWith(env.FS, device.Options{Protect: env.Protect}); err == nil {
+		if rep, err := env.Report(); err == nil {
 			for _, d := range rep.Devices {
 				if d.Media.Type == device.MediaLogical || len(want) > 0 && !want[d.Path] {
 					continue

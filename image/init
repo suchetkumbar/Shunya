@@ -1,0 +1,186 @@
+#!/bin/busybox sh
+# Shunya live image: init (PID 1). Everything runs from the initramfs in RAM.
+#
+#   1. mount /proc, /sys, /dev, /run, /tmp; load the storage drivers (etc/shunya/modules.order)
+#   2. find the boot medium by its labels (SHUNYA-LIVE, -KEYS, -DATA) and record its
+#      device numbers in /run/shunya/boot-device: shunya then refuses that disk in every
+#      build, mounted or not (design/IMAGE.md)
+#   3. mount SHUNYA-KEYS read-only on /keys (station key and certificate) and SHUNYA-DATA
+#      read-write on /data (journals, certificates, manifests)
+#   4. run "shunya tui" on the console chosen by shunya.console= (tty1 by default)
+#
+# PID 1 must never exit: every step falls through to the menu loop.
+
+/bin/busybox mkdir -p /proc /sys /dev /run /tmp /keys /data /sbin /usr/bin /usr/sbin
+/bin/busybox --install -s
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin HOME=/root
+umask 022
+mount -t proc -o nosuid,nodev,noexec proc /proc
+mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mount -t devtmpfs -o nosuid devtmpfs /dev
+mkdir -p /dev/pts && mount -t devpts -o nosuid,noexec devpts /dev/pts
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+mkdir -p /run/shunya /root
+
+CONSOLE=tty1
+for a in $(cat /proc/cmdline); do
+  case "$a" in shunya.console=tty[0-9]|shunya.console=tty[0-9][0-9]|shunya.console=ttyS[0-9]) CONSOLE=${a#shunya.console=} ;; esac
+done
+[ -c "/dev/$CONSOLE" ] || CONSOLE=console
+exec </dev/$CONSOLE >/dev/$CONSOLE 2>&1
+case "$CONSOLE" in
+  ttyS*) stty 115200 rows 40 cols 120 2>/dev/null; export TERM=vt220 ;;
+  *) export TERM=linux ;;
+esac
+
+say() { printf '%s\n' "$*"; }
+hr() { say "------------------------------------------------------------------------"; }
+
+say ""
+say "Shunya live $(cat /etc/shunya/version 2>/dev/null) — verifiable disk wiping"
+hr
+
+# 1. Storage drivers.
+while read -r m; do
+  [ -n "$m" ] && insmod "/lib/modules/$m" 2>/dev/null
+done </etc/shunya/modules.order
+
+# 2. The boot medium. USB disks take a few seconds to appear.
+labels() { blkid 2>/dev/null | grep -E 'LABEL="SHUNYA-(LIVE|KEYS|DATA)"'; }
+i=0
+while [ $i -lt 20 ] && ! labels | grep -q 'LABEL="SHUNYA-LIVE"'; do sleep 1; i=$((i + 1)); done
+sleep 2 # let the other partitions of the medium appear too
+
+# disk_of NAME: the whole disk a block device belongs to (sdb3 -> sdb, sr0 -> sr0).
+disk_of() {
+  if [ -e "/sys/class/block/$1/partition" ]; then
+    basename "$(dirname "$(readlink -f "/sys/class/block/$1")")"
+  else
+    echo "$1"
+  fi
+}
+
+LIVE_DISKS=""
+: >/run/shunya/boot-device.tmp
+labels >/run/shunya/labels
+while IFS= read -r line; do
+  dev=${line%%:*}
+  n=${dev#/dev/}
+  cat "/sys/class/block/$n/dev" >>/run/shunya/boot-device.tmp
+  case "$line" in *'LABEL="SHUNYA-LIVE"'*)
+    d=$(disk_of "$n")
+    case " $LIVE_DISKS " in *" $d "*) ;; *) LIVE_DISKS="$LIVE_DISKS $d" ;; esac ;;
+  esac
+done </run/shunya/labels
+LIVE_DISKS=${LIVE_DISKS# }
+mv /run/shunya/boot-device.tmp /run/shunya/boot-device
+chmod 0444 /run/shunya/boot-device
+
+STOP=""
+case "$LIVE_DISKS" in
+  "") STOP="Shunya could not find its own boot medium (label SHUNYA-LIVE), so it cannot protect it. Nothing will be wiped." ;;
+  *" "*) STOP="More than one Shunya boot medium is attached ($LIVE_DISKS). Remove all but the one you booted from, then restart." ;;
+esac
+[ -z "$STOP" ] && say "Boot medium: /dev/$LIVE_DISKS (protected: Shunya will not wipe it)"
+
+# 3. Key and data partitions, from the boot medium only.
+part_on_medium() { # LABEL -> /dev/NAME on the boot disk, or nothing
+  while IFS= read -r line; do
+    case "$line" in *"LABEL=\"$1\""*)
+      dev=${line%%:*}
+      [ "$(disk_of "${dev#/dev/}")" = "$LIVE_DISKS" ] && { echo "$dev"; return; } ;;
+    esac
+  done </run/shunya/labels
+}
+RAMDATA=""
+if [ -z "$STOP" ]; then
+  K=$(part_on_medium SHUNYA-KEYS)
+  D=$(part_on_medium SHUNYA-DATA)
+  if [ -n "$K" ] && mount -t ext4 -o ro,nosuid,nodev,noexec "$K" /keys; then
+    say "Keys:        $K on /keys (read-only)"
+  else
+    say "Keys:        no SHUNYA-KEYS partition (booted from a CD?)"
+  fi
+  if [ -n "$D" ] && mount -t ext4 -o rw,nosuid,nodev,noexec "$D" /data; then
+    say "Data:        $D on /data (journals and certificates are kept on the medium)"
+  else
+    mount -t tmpfs -o mode=0700,nosuid,nodev,size=64m tmpfs /data
+    RAMDATA=1
+    say "Data:        IN RAM ONLY. Journals and certificates are lost at power-off,"
+    say "             and an interrupted wipe cannot be resumed. Boot from the USB stick"
+    say "             (not as a CD) to keep them."
+  fi
+fi
+
+KEY=/keys/station.key
+CERT=/keys/station.cert.json
+if [ -z "$STOP" ] && [ ! -f "$KEY" ]; then
+  # A one-boot key keeps the journals signed; without a station certificate no wipe
+  # certificate is issued, and the TUI says so for every disk.
+  KEY=/run/shunya/session.key
+  shunya keys gen-station "$KEY" >/dev/null 2>&1
+  say "Station:     NO STATION KEY on SHUNYA-KEYS: disks are wiped and verified, but no"
+  say "             certificates are issued. See design/IMAGE.md, \"Provisioning\"."
+elif [ -z "$STOP" ]; then
+  if [ -f "$CERT" ]; then say "Station:     key and station certificate on /keys: every wipe gets a signed certificate"
+  else say "Station:     key on /keys but no station.cert.json: no certificates will be issued"; fi
+fi
+say "Clock:       $(date -u '+%Y-%m-%d %H:%M:%S UTC') (from the computer's clock; certificates record it)"
+hr
+
+SESSION=""
+newsession() {
+  SESSION=/data/sessions/$(date -u +%Y%m%dT%H%M%SZ)
+  mkdir -p "$SESSION"
+}
+
+run_tui() {
+  newsession
+  set -- --journal-dir "$SESSION" --key "$KEY"
+  [ -f "$CERT" ] && set -- "$@" --station-cert "$CERT"
+  shunya tui "$@"
+  sync
+}
+
+print_certs() {
+  found=""
+  for f in "$SESSION"/*.cert.json "$SESSION"/batch-*.manifest.json; do
+    [ -f "$f" ] || continue
+    found=1
+    say "----- BEGIN SHUNYA FILE $(basename "$f")"
+    cat "$f"
+    say ""
+    say "----- END SHUNYA FILE"
+  done
+  [ -n "$found" ] || say "No certificates in $SESSION."
+}
+
+poweroff_now() {
+  say "Writing everything to the medium and powering off…"
+  sync
+  umount /data 2>/dev/null
+  umount /keys 2>/dev/null
+  sync
+  poweroff -f
+}
+
+[ -z "$STOP" ] && { sleep 1; run_tui; }
+while :; do
+  hr
+  if [ -n "$STOP" ]; then
+    say "$STOP"
+  else
+    [ -n "$SESSION" ] && say "This session's files: $SESSION"
+    say "  Enter  wipe more disks"
+    say "  c      print this session's certificates and manifest (JSON) on the screen"
+  fi
+  say "  p      power off"
+  printf '> '
+  read -r choice || choice=""
+  case "$choice" in
+    p | P) poweroff_now ;;
+    c | C) [ -z "$STOP" ] && print_certs ;;
+    "") [ -z "$STOP" ] && run_tui ;;
+  esac
+done
