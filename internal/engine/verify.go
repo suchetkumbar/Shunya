@@ -67,6 +67,9 @@ const (
 	SeedOperator = "operator"
 	// SeedTlog: derived from a transparency-log checkpoint fetched after the wipe (M8).
 	SeedTlog = "tlog-checkpoint"
+	// SeedLocal: offline fallback, a random seed the tool drew itself after the wipe.
+	// The operator didn't pick it, but nobody else can confirm that.
+	SeedLocal = "local-random"
 )
 
 // SampleResult is the outcome of a sampled verification.

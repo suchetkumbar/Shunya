@@ -35,11 +35,11 @@ commands:
   wipe [flags] DEVICE     overwrite DEVICE (Clear) or --method ata-secure-erase. Without --execute it
   wipe [flags] --image F  prints the plan and writes nothing. See shunya wipe -h.
   wipe --resume ...       continue an interrupted wipe from its journal
-  verify --journal J ...  re-verify a finished wipe (full, or --sample N --seed HEX)
+  verify --journal J ...  re-verify a finished wipe (full, or --sample N with --log URL --log-key K, or --seed HEX)
   journal show JOURNAL    verify a progress journal and show its history
   keys ...                station keys, the offline root key, station certificates and
                           revocation (shunya keys help)
-  cert issue|show|pdf     erasure certificates: issue from a verified journal, verify, render
+  cert issue|submit|show|pdf  erasure certificates: issue from a verified journal, log, verify, render
                           the PDF (shunya cert help)
   plan DEVICE            every erase method the drive supports, its NIST level, and the recommendation (read-only)
   nvme identify DEVICE    decode NVMe Identify Controller/Namespace (read-only; --ctrl FILE parses saved data)

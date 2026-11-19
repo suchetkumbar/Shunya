@@ -83,6 +83,10 @@ machine Shunya runs on. They override every other requirement.
 32. **No secrets in certificates.** Pattern keys, marker keys and the temporary ATA password stay in the journal. The tests search the signed bytes for them.
 33. **Root key offline and encrypted.** `root.key` is encrypted under a passphrase (at least 12 characters, no echo), written 0600 with O_EXCL, and refused when readable by others. No command copies it anywhere. Init-root refuses to replace an existing root.
 34. **Dev keys are labelled, never trusted silently.** Certificates from uncertified keys say so in the JSON and on the PDF. Verifiers refuse them unless `--allow-dev-key`, and then warn.
+35. **The seed source is always stated.** A sampled verification records `tlog-checkpoint`, `operator` or `local-random`, and verifiers warn about the last two. An unreachable log never silently weakens the check: the default fallback is a full read-back (`--offline-seed full`), and `local` must be chosen explicitly.
+36. **The log never trusts its own files blindly.** At startup the server rebuilds the tree from every entry and checks the root and every tile against the signed checkpoint; it refuses to serve a log that fails. Files a published checkpoint covers are never rewritten.
+37. **The server is local unless told otherwise.** `shunya-verify serve` binds to loopback; any other address needs `--allow-public`. Requests are rate-limited, bodies size-limited, and logs never contain bodies or query strings. Only root-certified, unrevoked stations get seeds or log certificates.
+38. **Answers from the log are verified before use.** The station checks every checkpoint signature and inclusion proof against the log key it was configured with; an answer that does not verify is an error, never a seed.
 
 ### Interpretation note
 Rule 2.1 targets storage devices. `/dev/null` (shell redirects, `go build -o /dev/null`) is

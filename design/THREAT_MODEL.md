@@ -47,10 +47,18 @@
 | T32 | A certificate is edited (level, serial, result) | M7: Ed25519 over the canonical body; the file must be exactly canonical; every single-byte change fails (exhaustive test + fuzz) | mitigated (M7) |
 | T33 | Two encodings of one certificate, or a member the verifier ignores (malleability) | M7: strict RFC 8785 parser (duplicates, surrogates, UTF-8); bodies must re-encode to their signed bytes. Found in testing: `encoding/json` accepted `"Certificate"` for `"certificate"` | mitigated (M7) |
 | T34 | A signature for one document type is replayed as another | M7: domain-separated contexts per document type | mitigated (M7) |
-| T35 | A stolen station key signs backdated certificates | M7: revocation `compromised` refuses every certificate of the key, whatever its date. M8 log proofs will date certificates independently | mitigated (M7), refined in M8 |
+| T35 | A stolen station key signs backdated certificates | M7: revocation `compromised` refuses every certificate of the key, whatever its date. M8: the log orders certificates, but revocation does not yet refer to log positions, so all of the key's certificates still fail | mitigated (M7) |
 | T36 | Root key stolen from disk | M7: encrypted (PBKDF2-SHA256 600k + AES-256-GCM), kept offline; a stolen file still needs the passphrase. Hardware tokens later | partial (by design) |
-| T37 | A verifier uses an old revocation list | Offline verification cannot know about newer lists; the list number is printed, lists only grow. M8 publishes the current list | accepted (offline) |
+| T37 | A verifier uses an old revocation list | Offline verification cannot know about newer lists; the list number is printed, lists only grow. M8: the server publishes its current list at `/revocations` (root-signed) | accepted (offline) |
 | T38 | The PDF is edited and shown instead of the JSON | M7: the PDF is a pure rendering; `shunya-verify --pdf` re-renders and compares bytes; the QR code leads to the JSON's ID | mitigated (M7) |
+| T39 | The operator picks a sampling seed that avoids dirty sectors | M8: the seed comes from a log checkpoint that covers the station's request and a random beacon of the log's, asked for after `done`; verifiers recompute it from the certificate | mitigated (M8) |
+| T40 | Seed grinding: the station asks again until the positions suit it | M8: every request is a public log entry; the server counts them and `audit` lists repeats per station, wipe and device | detected (M8) |
+| T41 | The log deletes, edits or reorders published entries and re-signs | M8: `audit` checks a consistency proof against the checkpoint it saved last time (the acceptance test rewrites and deletes leaves) | mitigated (M8) |
+| T42 | Log files tampered behind the log's back | M8: startup and `audit` rebuild the tree from the entries and compare the root and every tile with the signed checkpoint | mitigated (M8) |
+| T43 | A forged log answer (fake proof, other log's checkpoint) | M8: checkpoints must be signed by the configured log key and name its origin; inclusion proofs are verified before a seed or proof is used | mitigated (M8) |
+| T44 | Split view: the log shows different trees to different clients | M8: only detected when auditors compare saved checkpoints; no witnesses/cosigners yet | open |
+| T45 | Abuse of the public server (floods, huge bodies, path tricks, script injection on the page) | M8: per-client token bucket, 64 KiB/16 KiB body limits, timeouts, canonical tile paths only, html/template escaping, CSP `default-src 'none'`, loopback unless `--allow-public` | mitigated (M8) |
+| T46 | Logged certificates expose device serials and station names | M8: the log is public by design; documented. Hashing or redacting serials would weaken what a recycler can check | accepted |
 
 ## Out of scope
 - Physical destruction (NIST "Destroy").
@@ -77,3 +85,9 @@
   certified signed this summary of its journal, and that nothing has changed since. It
   repeats what the journal and the read-back showed. It adds no evidence about the media
   itself. Its time is the station's own claim until the transparency log (M8) dates it.
+- **M8: what the log proves.** An inclusion proof shows that the log, under its key,
+  committed to this exact certificate at a position, and consistency proofs show that it
+  never rewrote that past for any auditor who kept a checkpoint. A log seed shows the
+  sample positions were fixed only after the station asked, once the wipe was recorded as
+  done. Neither proves wall-clock time, and neither helps if the tool itself is modified
+  to lie: that is what reproducible builds and the recorded build hash are for.

@@ -9,8 +9,14 @@
 // the context keys.CtxCertificate and BODY's canonical bytes; the station key is
 // certified by the organisation's root (keys.StationCert, embedded in BODY). The
 // certificate ID is the SHA-256 of BODY's canonical bytes: the QR code carries it.
-// "log" will hold the transparency-log inclusion proof (Milestone 8); it is outside
-// the signature because it is added after signing and proves itself.
+// "log" holds the transparency-log inclusion proof once the certificate is logged
+// (logentry.Inclusion); it is outside the signature because it is added after signing
+// and proves itself against the log's key. The logged entry is the envelope with
+// "log": null (LogEntry).
+//
+// Version 2 (Milestone 8) adds, for a sampled verification whose seed came from the
+// log, the signed seed request and its inclusion proof, from which a verifier
+// recomputes the seed. Version 1 certificates still verify.
 //
 // Verify requires the exact canonical bytes, so any change to the file — even one
 // that keeps the JSON meaning, such as added whitespace — fails.
@@ -25,9 +31,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"shunya/internal/checkpoint"
 	"shunya/internal/jcs"
 	"shunya/internal/keys"
+	"shunya/internal/logentry"
+	"shunya/internal/note"
 )
 
 const (
@@ -42,6 +52,15 @@ const (
 	MaxBytes = 1 << 20
 	// MaxURL keeps URL + ID within a version-10 QR code.
 	MaxURL = 100
+	// Version is what Shunya issues; Verify accepts 1 and 2.
+	Version = 2
+)
+
+// Seed sources (engine.Seed*) as certificates name them.
+const (
+	SeedOperator = "operator"
+	SeedTlog     = "tlog-checkpoint"
+	SeedLocal    = "local-random"
 )
 
 // Trust levels.
@@ -144,6 +163,10 @@ type Verification struct {
 	Seed       string  `json:"seed"`
 	Bound95    float64 `json:"bound95"`
 	Scope      string  `json:"scope"`
+	// Version 2, seed source tlog-checkpoint only: the station's signed request and
+	// the log's checkpoint with the request's inclusion proof.
+	SeedRequest *logentry.SeedRequest `json:"seed_request,omitempty"`
+	SeedLog     *logentry.Inclusion   `json:"seed_log,omitempty"`
 }
 
 // Interruption is one stop and resume.
@@ -241,6 +264,15 @@ type Policy struct {
 	Revocations    *keys.RevocationList // verified by the caller against Root, or checked here
 	SkipRevocation bool                 // explicitly verify without a revocation list
 	AllowDevKey    bool                 // accept certificates from uncertified dev keys (marked)
+	LogKey         *note.Verifier       // the transparency log's key: check log proofs
+	RequireLog     bool                 // refuse certificates without a log inclusion proof
+}
+
+// LogStatus is a certificate's place in the transparency log.
+type LogStatus struct {
+	Index      uint64
+	Checkpoint checkpoint.Checkpoint // verified against Policy.LogKey when Checked
+	Checked    bool
 }
 
 // Result is a verified certificate.
@@ -249,6 +281,7 @@ type Result struct {
 	ID          string
 	Trust       string
 	Body        []byte // canonical body
+	Logged      *LogStatus
 	Warnings    []string
 }
 
@@ -267,9 +300,6 @@ func Verify(file []byte, p Policy) (*Result, error) {
 	var e envelope
 	if err := strict(file, &e); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if string(e.Log) != "null" {
-		return nil, fmt.Errorf("%w: log proofs are not supported by this verifier version", ErrInvalid)
 	}
 	var c Certificate // every member present, none defaulted: it re-encodes to the signed bytes
 	if err := strict(e.Certificate, &c); err != nil {
@@ -291,6 +321,12 @@ func Verify(file []byte, p Policy) (*Result, error) {
 	}
 	r := &Result{Certificate: c, ID: ID(e.Certificate), Body: e.Certificate}
 	issued, _ := keys.ParseTime(c.Issued)
+	if err := r.checkLog(e, p); err != nil {
+		return nil, err
+	}
+	if err := r.checkSeeds(p); err != nil {
+		return nil, err
+	}
 
 	if c.Station.Certificate == nil {
 		if !p.AllowDevKey {
@@ -327,6 +363,145 @@ func Verify(file []byte, p Policy) (*Result, error) {
 	return r, nil
 }
 
+// checkLog verifies the envelope's log proof, if any, against the log key.
+func (r *Result) checkLog(e envelope, p Policy) error {
+	if string(e.Log) == "null" {
+		if p.RequireLog {
+			return fmt.Errorf("%w: not logged (no inclusion proof) and the policy requires it", ErrInvalid)
+		}
+		return nil
+	}
+	var in logentry.Inclusion
+	if err := strict(e.Log, &in); err != nil {
+		return fmt.Errorf("%w: log proof: %v", ErrInvalid, err)
+	}
+	r.Logged = &LogStatus{Index: in.Index}
+	if p.LogKey == nil {
+		if p.RequireLog {
+			return fmt.Errorf("%w: a log proof is required but no log key was given", ErrInvalid)
+		}
+		r.Warnings = append(r.Warnings, fmt.Sprintf("log inclusion proof (entry %d) not checked: no log key given", in.Index))
+		return nil
+	}
+	entry, err := entryOf(e.Certificate, e.Signature)
+	if err != nil {
+		return err
+	}
+	cp, err := in.Verify(entry, p.LogKey)
+	if err != nil {
+		return fmt.Errorf("%w: log proof: %v", ErrInvalid, err)
+	}
+	r.Logged.Checkpoint, r.Logged.Checked = cp, true
+	return nil
+}
+
+// checkSeeds checks each log-seeded sampled verification: the seed request is the
+// station's, for this wipe and device, made after the erase finished; the seed is the
+// one the checkpoint gives; and (with a log key) the checkpoint is the log's and
+// includes the request.
+func (r *Result) checkSeeds(p Policy) error {
+	c := r.Certificate
+	for i, v := range c.Verification {
+		bad := func(f string, a ...any) error {
+			return fmt.Errorf("%w: verification %d: %s", ErrInvalid, i+1, fmt.Sprintf(f, a...))
+		}
+		switch v.SeedSource {
+		case SeedOperator:
+			r.Warnings = append(r.Warnings, fmt.Sprintf("verification %d: sampled with an operator-chosen seed (the station could have chosen which sectors to read)", i+1))
+		case SeedLocal:
+			r.Warnings = append(r.Warnings, fmt.Sprintf("verification %d: sampled offline with a station-generated random seed (not independently unpredictable)", i+1))
+		}
+		if v.SeedSource != SeedTlog {
+			continue
+		}
+		q, l := v.SeedRequest, v.SeedLog
+		if err := q.Verify(); err != nil {
+			return bad("seed request: %v", err)
+		}
+		switch {
+		case q.WipeID != c.WipeID:
+			return bad("seed request is for wipe %s", q.WipeID)
+		case q.Fingerprint != c.Device.Fingerprint && q.Fingerprint != c.Device.NativeFingerprint:
+			return bad("seed request is for device %s", q.Fingerprint)
+		case q.StationKeyID != c.Station.KeyID:
+			return bad("seed request made by station %s", q.StationKeyID)
+		}
+		req, _ := keys.ParseTime(q.Requested)
+		// The request time has whole seconds; the finish time may have fractions.
+		if fin, err := keys.ParseTime(c.Erasure.Finished); err == nil && req.Before(fin.Truncate(time.Second)) {
+			return bad("seed requested at %s, before the erase finished at %s", q.Requested, c.Erasure.Finished)
+		}
+		text, err := l.CheckpointText()
+		if err != nil {
+			return bad("seed checkpoint: %v", err)
+		}
+		if hex.EncodeToString(logentry.Seed(text, q.Fingerprint)) != v.Seed {
+			return bad("the seed is not the one the log checkpoint gives")
+		}
+		if p.LogKey == nil {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("verification %d: the log checkpoint behind the sampling seed was not checked: no log key given", i+1))
+			continue
+		}
+		entry, err := q.Entry()
+		if err != nil {
+			return bad("seed request: %v", err)
+		}
+		if _, err := l.Verify(entry, p.LogKey); err != nil {
+			return bad("seed request not in the log: %v", err)
+		}
+	}
+	return nil
+}
+
+func entryOf(body []byte, sig string) ([]byte, error) {
+	b, err := jcs.Marshal(envelope{Certificate: body, Log: json.RawMessage("null"), Signature: sig})
+	if err != nil {
+		return nil, err
+	}
+	return logentry.Entry(logentry.TypeCertificate, b)
+}
+
+// LogEntry is the transparency-log entry for a certificate file: its envelope with
+// "log": null. The file's form is checked, not its signature.
+func LogEntry(file []byte) ([]byte, error) {
+	if !bytes.HasSuffix(file, []byte("\n")) || !jcs.IsCanonical(file[:len(file)-1]) {
+		return nil, ErrNotCanonical
+	}
+	var e envelope
+	if err := strict(file, &e); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return entryOf(e.Certificate, e.Signature)
+}
+
+// WithLog returns the certificate file with its log inclusion proof attached
+// (replacing any earlier one). The signature is unaffected.
+func WithLog(file []byte, in logentry.Inclusion) ([]byte, error) {
+	var e envelope
+	if err := strict(file, &e); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	l, err := jcs.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	e.Log = l
+	out, err := jcs.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// FromEntry turns a certificate log entry back into a certificate file (no proof).
+func FromEntry(entry []byte) ([]byte, error) {
+	typ, payload, err := logentry.Split(entry)
+	if err != nil || typ != logentry.TypeCertificate {
+		return nil, fmt.Errorf("%w: not a certificate entry", ErrInvalid)
+	}
+	return append(append([]byte(nil), payload...), '\n'), nil
+}
+
 // strict decodes canonical JSON b into v and requires that v encodes back to exactly
 // b. encoding/json alone is not enough: it matches member names case-insensitively
 // ("Certificate" fills Certificate) and defaults missing members.
@@ -357,6 +532,14 @@ var methods = map[string]bool{
 	"nvme-sanitize-crypto-erase": true, "nvme-sanitize-block-erase": true, "nvme-sanitize-overwrite": true,
 }
 
+// ValidVerifyURL: https, or http to the loopback address (a local verifier for demos
+// and labs); printable without quoting; short enough for the QR code.
+func ValidVerifyURL(u string) bool {
+	local := strings.HasPrefix(u, "http://127.0.0.1:") || strings.HasPrefix(u, "http://127.0.0.1/") ||
+		strings.HasPrefix(u, "http://localhost:") || strings.HasPrefix(u, "http://localhost/")
+	return (strings.HasPrefix(u, "https://") || local) && len(u) <= MaxURL && !strings.ContainsAny(u, " \"<>\\^`{|}")
+}
+
 // KnownMethod reports whether a certificate may name method m.
 func KnownMethod(m string) bool { return methods[m] }
 
@@ -364,7 +547,7 @@ func KnownMethod(m string) bool { return methods[m] }
 func (c Certificate) check() error {
 	bad := func(f string, a ...any) error { return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(f, a...)) }
 	switch {
-	case c.Format != Format || c.Version != 1:
+	case c.Format != Format || (c.Version != 1 && c.Version != 2):
 		return bad("unsupported format %q version %d", c.Format, c.Version)
 	case len(c.WipeID) != 32 || strings.Trim(c.WipeID, "0123456789abcdef") != "":
 		return bad("wipe id %q", c.WipeID)
@@ -380,8 +563,8 @@ func (c Certificate) check() error {
 		return bad("a virtual disk's erase cannot be shown to reach the media: Clear at most")
 	case len(c.Verification) == 0:
 		return bad("no verification recorded")
-	case !strings.HasPrefix(c.VerifyURL, "https://") || len(c.VerifyURL) > MaxURL || strings.ContainsAny(c.VerifyURL, " \"<>\\^`{|}"):
-		return bad("verify URL %q (https, at most %d characters)", c.VerifyURL, MaxURL)
+	case !ValidVerifyURL(c.VerifyURL):
+		return bad("verify URL %q (https, or http to this machine only; at most %d characters)", c.VerifyURL, MaxURL)
 	case c.Journal.KeyID != c.Station.KeyID:
 		return bad("journal signed by %s, certificate by %s", c.Journal.KeyID, c.Station.KeyID)
 	case len(c.Journal.SHA256) != 64:
@@ -390,6 +573,15 @@ func (c Certificate) check() error {
 	for i, v := range c.Verification {
 		if !v.OK {
 			return bad("verification %d (%s) failed", i+1, v.Mode)
+		}
+		hasLog := v.SeedRequest != nil || v.SeedLog != nil
+		switch {
+		case hasLog && (c.Version < 2 || v.SeedSource != SeedTlog):
+			return bad("verification %d: seed request on a %q seed (version %d)", i+1, v.SeedSource, c.Version)
+		case v.SeedSource == SeedTlog && (v.SeedRequest == nil || v.SeedLog == nil):
+			return bad("verification %d: log seed without its request and checkpoint", i+1)
+		case v.SeedSource == SeedTlog && v.Mode != "sampled":
+			return bad("verification %d: log seed on a %s verification", i+1, v.Mode)
 		}
 	}
 	if _, err := keys.ParseTime(c.Issued); err != nil {

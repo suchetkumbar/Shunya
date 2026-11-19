@@ -72,7 +72,7 @@ func BuildCertificate(log *journal.Log, journalBytes []byte, st State, in CertIn
 	h := sha256.Sum256(journalBytes[:log.GoodBytes])
 	p := st.Plan
 	c := cert.Certificate{
-		Format: cert.Format, Version: 1, WipeID: st.WipeID, Issued: keys.FormatTime(in.Now),
+		Format: cert.Format, Version: cert.Version, WipeID: st.WipeID, Issued: keys.FormatTime(in.Now),
 		Result: cert.ResultErasedVerified,
 		Tool: cert.Tool{Wipe: st.Tool, WipeBuildHash: st.ToolBuildHash, Issuer: in.Issuer,
 			IssuerBuildHash: in.IssuerBuildHash, Build: in.Build},
@@ -97,7 +97,7 @@ func BuildCertificate(log *journal.Log, journalBytes []byte, st State, in CertIn
 	for _, v := range st.Verifications {
 		c.Verification = append(c.Verification, cert.Verification{Mode: v.Mode, Pattern: v.Pattern, OK: v.OK,
 			BytesRead: v.BytesRead, BadSectors: v.BadSectors, Samples: v.Samples, SeedSource: v.SeedSource,
-			Seed: v.Seed, Bound95: v.Bound95, Scope: v.Scope})
+			Seed: v.Seed, Bound95: v.Bound95, Scope: v.Scope, SeedRequest: v.SeedRequest, SeedLog: v.SeedLog})
 	}
 	for _, i := range st.Interruptions {
 		c.Interruptions = append(c.Interruptions, cert.Interruption{Kind: i.Kind, Reason: i.Reason, Pass: i.Pass,

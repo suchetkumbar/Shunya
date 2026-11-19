@@ -9,6 +9,7 @@ with its justification.
 | Module | Used by | Why | Added |
 |---|---|---|---|
 | `golang.org/x/sys` v0.50.0 | `internal/backend` (Linux) | open(2) with O_EXCL/O_DIRECT, fstat, BLKSSZGET/BLKPBSZGET/BLKDISCARD ioctls, fallocate. Maintained by the Go team; the stdlib `syscall` package is frozen and lacks these. | M2 |
+| `golang.org/x/mod` v0.42.0 | **tests only** (`internal/tlog`, `note`, `checkpoint`, `tilestore`) | An independent implementation of the same formats (sumdb `tlog` and `note`), used as a test oracle: roots, proofs, tile paths and contents, signed notes in both directions. Not linked into any binary (`go list -deps ./cmd/...` doesn't list it). Go team. v0.42.0 (2026-10-09) rather than v0.43.0 (ten days old). The note package was pre-approved; `sumdb/tlog` is in the same module. | M8 |
 | `golang.org/x/term` v0.47.0 | `cmd/shunya` (keys) | Reads the root key passphrase without echo, on Linux and Windows. Go team. v0.47.0 (2026-10-09) rather than v0.48.0 (2026-11-09, nine days old when added); it needs only `x/sys`, already present. Approved by the user for M7. | M7 |
 
 No module was added in M3. `golang.org/x/sys` also provides flock and `O_NOFOLLOW` for the journal and `st_dev` for the journal placement check. The random pattern uses the standard library's `crypto/aes` + `crypto/cipher` CTR; ChaCha20 would need `x/crypto`, which isn't pre-approved. Leak checks use the in-tree `internal/testutil/leakcheck` instead of `go.uber.org/goleak`.
@@ -59,3 +60,13 @@ needed.
 Lab VM packages added in M7, used only by `TestLabCertificate` to check Shunya's PDF and
 QR output independently: `qpdf`, `poppler-utils` (pdftotext, pdftoppm), `zbar` (zbarimg)
 and `imagemagick`, whose image coders zbarimg needs (VM only, 46 MiB in all).
+
+## Test data from other projects
+
+| Data | Source | Licence | Where |
+|---|---|---|---|
+| RFC 6962 inclusion and consistency proof vectors (196 JSON files) | transparency-dev/merkle `testdata/` (tarball of `main`, SHA-256 `0ccc8608…`, 2026-11-19) | Apache-2.0 (copy in the directory) | `internal/tlog/testdata/transparency-dev/` |
+
+No module was added for the log itself in M8: the Merkle tree, signed notes, checkpoints,
+tiles, server and rate limiter are in-tree, on the standard library (`net/http`,
+`log/slog`, `html/template`, `crypto/ed25519`).

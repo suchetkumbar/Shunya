@@ -21,8 +21,17 @@ func checkVerifyFlags(f wipeFlags) error {
 	if f.sample < 0 {
 		return errors.New("--sample must be positive")
 	}
-	if (f.sample > 0) != (f.seed != "") {
-		return errors.New("--sample N and --seed HEX go together")
+	if f.seed != "" && f.sample == 0 {
+		return errors.New("--seed HEX needs --sample N")
+	}
+	if f.seed != "" && f.logURL != "" {
+		return errors.New("--seed and --log are alternatives: the log's seed is the one the operator cannot choose")
+	}
+	if f.sample > 0 && f.seed == "" && f.logURL == "" && f.offlineSeed != offlineLocal {
+		return errors.New("--sample N needs a seed: --log URL --log-key KEY (unpredictable), --seed HEX (operator-chosen) or --offline-seed local")
+	}
+	if err := checkLogFlags(f); err != nil {
+		return err
 	}
 	if f.seed != "" {
 		if b, err := hex.DecodeString(f.seed); err != nil || len(b) < 16 {
@@ -83,24 +92,43 @@ func verifyAndRecord(ctx context.Context, tg backend.Target, plan engine.Plan, r
 		}
 	}
 	if f.sample > 0 {
-		seed, _ := hex.DecodeString(f.seed)
-		v, err := engine.VerifySampled(ctx, tg, pat, seed, engine.SeedOperator, f.sample)
+		seed, src, q, in, full, err := sampleSeed(ctx, f, tg, stdout)
+		if err != nil {
+			fmt.Fprintln(stderr, "shunya: verify: sampling seed:", err)
+			return max(code, 1)
+		}
+		if full { // offline fallback: the whole target instead
+			if f.verify {
+				return code // already read back in full above
+			}
+			g := f
+			g.verify, g.sample = true, 0
+			return max(code, verifyAndRecord(ctx, tg, plan, rec, g, scope, stdout, stderr))
+		}
+		v, err := engine.VerifySampled(ctx, tg, pat, seed, src, f.sample)
 		if err != nil {
 			fmt.Fprintln(stderr, "shunya: verify:", err)
 			return 1
 		}
 		if !record(engine.VerifiedData{Mode: "sampled", Pattern: last.Pattern, OK: v.OK(), BytesRead: v.BytesRead,
 			BadSectors: v.BadSectors, FirstBad: v.FirstBad, Samples: v.Samples, SeedSource: v.SeedSource, Seed: v.Seed,
-			Bound95: v.Bound95, Scope: scope}) {
+			Bound95: v.Bound95, Scope: scope, SeedRequest: q, SeedLog: in}) {
 			return code
 		}
 		verdict := "VERIFIED (sampled)"
 		if !v.OK() {
 			verdict = fmt.Sprintf("VERIFY FAILED (sampled): %d of", v.BadSectors)
 		}
-		fmt.Fprintf(stdout, "%s %d sectors from an operator-chosen seed; an unwiped share of %.3f%% or more would be caught with 95%% probability.\n",
-			verdict, v.Samples, 100*v.Bound95)
-		fmt.Fprintln(stdout, "  note: the operator chose this seed; from Milestone 8 it comes from the transparency log instead.")
+		from := map[string]string{engine.SeedOperator: "an operator-chosen seed", engine.SeedLocal: "a random seed drawn by this tool",
+			engine.SeedTlog: "a seed from the transparency log"}[src]
+		fmt.Fprintf(stdout, "%s %d sectors from %s; an unwiped share of %.3f%% or more would be caught with 95%% probability.\n",
+			verdict, v.Samples, from, 100*v.Bound95)
+		switch src {
+		case engine.SeedOperator:
+			fmt.Fprintln(stdout, "  note: the operator chose this seed, so it proves less; use --log for an unpredictable one.")
+		case engine.SeedTlog:
+			fmt.Fprintf(stdout, "  seed: log entry %d, asked after the wipe finished; anyone can recompute it from the certificate.\n", in.Index)
+		}
 	}
 	return code
 }
@@ -112,7 +140,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	var f wipeFlags
 	fl.BoolVar(&f.verify, "full", false, "full read-back (default when --sample is not given)")
 	fl.IntVar(&f.sample, "sample", 0, "verify N sectors chosen from --seed")
-	fl.StringVar(&f.seed, "seed", "", "hex seed (at least 16 bytes) for --sample")
+	fl.StringVar(&f.seed, "seed", "", "hex seed (at least 16 bytes) for --sample, chosen by the operator (labelled)")
+	fl.StringVar(&f.stationCert, "station-cert", "", "the station's certificate: needed to ask the log for a seed")
+	logFlags(fl, &f)
 	fl.StringVar(&f.journal, "journal", "", "the wipe's journal")
 	fl.StringVar(&f.key, "key", "", "station key")
 	fl.BoolVar(&f.direct, "direct", false, "image files: use O_DIRECT")
@@ -121,7 +151,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fl.NArg() != 0 || f.journal == "" || f.key == "" {
-		fmt.Fprint(stderr, "usage: shunya verify [--full] [--sample N --seed HEX] --journal FILE --key FILE\n")
+		fmt.Fprint(stderr, "usage: shunya verify [--full] [--sample N (--log URL --log-key K --station-cert S | --seed HEX | --offline-seed local)] --journal FILE --key FILE\n")
 		return 2
 	}
 	if err := checkVerifyFlags(f); err != nil {

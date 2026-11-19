@@ -14,6 +14,7 @@ import (
 	"shunya/internal/cert"
 	"shunya/internal/certpdf"
 	"shunya/internal/keys"
+	"shunya/internal/note"
 )
 
 // Options says what the verifier trusts and checks.
@@ -23,6 +24,23 @@ type Options struct {
 	SkipRevocation bool
 	AllowDevKey    bool
 	PDF            string // a PDF claimed to render this certificate
+	LogKey         string // the transparency log's verifier key file, or the key itself
+	RequireLog     bool   // refuse certificates without a verified log inclusion proof
+}
+
+// ReadLogKey reads a log verifier key from a file, or takes s as the key itself.
+func ReadLogKey(s string) (*note.Verifier, error) {
+	text := s
+	if b, err := os.ReadFile(s); err == nil {
+		text = string(b)
+	} else if !strings.Contains(s, "+") {
+		return nil, fmt.Errorf("log key: %w", err)
+	}
+	v, err := note.ParseVerifierKey(text)
+	if err != nil {
+		return nil, fmt.Errorf("log key: %w", err)
+	}
+	return v, nil
 }
 
 // Outcome is a successful verification.
@@ -41,7 +59,12 @@ func Verify(path string, o Options) (*Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := cert.Policy{SkipRevocation: o.SkipRevocation, AllowDevKey: o.AllowDevKey}
+	p := cert.Policy{SkipRevocation: o.SkipRevocation, AllowDevKey: o.AllowDevKey, RequireLog: o.RequireLog}
+	if o.LogKey != "" {
+		if p.LogKey, err = ReadLogKey(o.LogKey); err != nil {
+			return nil, err
+		}
+	}
 	if o.Root == "" {
 		if !o.AllowDevKey {
 			return nil, errors.New("--root is required (the organisation's root public key)")
@@ -128,6 +151,18 @@ func Print(w io.Writer, o *Outcome) {
 	fmt.Fprintf(w, "  signed by    %s, issued %s\n", trust, c.Issued)
 	if o.RevocationList > 0 {
 		fmt.Fprintf(w, "  revocation   not revoked in list %d\n", o.RevocationList)
+	}
+	if l := o.Logged; l != nil {
+		if l.Checked {
+			fmt.Fprintf(w, "  logged       entry %d in log %s (checkpoint size %d, proof verified)\n", l.Index, l.Checkpoint.Origin, l.Checkpoint.Size)
+		} else {
+			fmt.Fprintf(w, "  logged       entry %d (proof NOT checked: no --log-key)\n", l.Index)
+		}
+	}
+	for _, v := range c.Verification {
+		if v.SeedSource == cert.SeedTlog {
+			fmt.Fprintf(w, "  sampling     %d sectors, seed from the transparency log (request entry %d)\n", v.Samples, v.SeedLog.Index)
+		}
 	}
 	if o.PDFChecked {
 		fmt.Fprintln(w, "  pdf          is exactly this certificate's rendering")

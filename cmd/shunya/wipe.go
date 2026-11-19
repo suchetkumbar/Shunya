@@ -23,7 +23,7 @@ import (
 )
 
 // version is reported in journals and certificates.
-var version = "0.7.0-dev"
+var version = "0.8.0-dev"
 
 // wrapTarget lets tests slow down or observe the target; identity in production.
 var wrapTarget = func(t backend.Target) backend.Target { return t }
@@ -38,6 +38,7 @@ type wipeFlags struct {
 	execute, resume, verify, direct, asJSON, yesReally bool
 	image, journal, key, patterns, confirm, approved   string
 	seed, method, hpa, stationCert, verifyURL          string
+	logURL, logKey, offlineSeed                        string
 	sector, chunkMiB, syncMiB, passes, sample          int
 }
 
@@ -48,8 +49,9 @@ func cmdWipe(args []string, stdout, stderr io.Writer) int {
 	fl.BoolVar(&f.execute, "execute", false, "actually write (without it: print the plan, write nothing)")
 	fl.BoolVar(&f.resume, "resume", false, "continue the wipe recorded in --journal")
 	fl.BoolVar(&f.verify, "verify", false, "read the whole target back afterwards and compare with the last pass")
-	fl.IntVar(&f.sample, "sample", 0, "afterwards, verify N sectors chosen from --seed (sampled verification)")
+	fl.IntVar(&f.sample, "sample", 0, "afterwards, verify N sectors at positions from an unpredictable seed (--log) or --seed")
 	fl.StringVar(&f.seed, "seed", "", "hex seed (at least 16 bytes) for --sample; recorded as operator-chosen")
+	logFlags(fl, &f)
 	fl.BoolVar(&f.direct, "direct", false, "image files: use O_DIRECT (block devices always do)")
 	fl.BoolVar(&f.asJSON, "json", false, "dry run: print the plan as JSON")
 	fl.StringVar(&f.image, "image", "", "wipe this regular image file instead of a device")
@@ -106,7 +108,7 @@ func certifyAfter(f wipeFlags, code int, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Certificate: shunya cert issue --journal", f.journal, "--key", f.key, "--station-cert STATION.cert.json")
 		return 0
 	}
-	if err := issueCertificate(issueRequest{journal: f.journal, key: f.key, stationCert: f.stationCert, verifyURL: f.verifyURL}, stdout); err != nil {
+	if err := issueCertificate(issueRequest{journal: f.journal, key: f.key, stationCert: f.stationCert, verifyURL: f.verifyURL, log: f}, stdout); err != nil {
 		fmt.Fprintln(stderr, "shunya: wipe: certificate:", err)
 		if errors.Is(err, engine.ErrNotCertifiable) {
 			fmt.Fprintln(stdout, "No certificate: the wipe has no passing verification yet (add --verify or --sample, or run shunya verify).")

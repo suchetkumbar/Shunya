@@ -230,7 +230,7 @@ func TestSemanticChecks(t *testing.T) {
 		"failed check":       func(c *Certificate) { c.Verification[1].OK = false },
 		"no verification":    func(c *Certificate) { c.Verification = []Verification{} },
 		"result":             func(c *Certificate) { c.Result = "erased" },
-		"version":            func(c *Certificate) { c.Version = 2 },
+		"version":            func(c *Certificate) { c.Version = 3 },
 		"format":             func(c *Certificate) { c.Format = "x" },
 		"station mismatch":   func(c *Certificate) { c.Station.Name = "bay-4" },
 		"journal key":        func(c *Certificate) { c.Journal.KeyID = "ed25519:0000000000000000" },

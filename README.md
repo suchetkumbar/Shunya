@@ -3,7 +3,7 @@
 A verifiable secure data-wiping tool for trustworthy IT asset recycling. Built for Smart
 India Hackathon 2025, problem SIH25070.
 
-> **Status: Milestone 7 (certificates).** A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
+> **Status: Milestone 8 (transparency log).** Certificates go into an append-only Merkle-tree log (C2SP checkpoints and tiles); `shunya-verify serve` is the log and a recycler page the QR code leads to, and `shunya-verify audit` catches a log that rewrites its past. Sampled verification takes its seed from the log after the wipe, so the operator can't choose it. A verified wipe gets a signed certificate (JSON + printable PDF with a QR code), checked fully offline by `shunya-verify` against the organisation's root key. `shunya plan` lists every erase method a drive supports with its NIST level; `shunya wipe` overwrites (Clear, HPA included) or runs the drive's own erase — ATA Security Erase, ATA SANITIZE, NVMe Sanitize or Format NVM (Purge where the medium allows) with a crash-safe, signed journal and resume; `shunya verify` re-checks a finished wipe by full read-back or by sampling. In the lab, a forensic harness shows that photorec recovers planted files before a wipe and nothing after it. Everything is a dry run unless `--execute` is given.
 
 ## Goals
 - Media-aware NIST SP 800-88 wiping (Clear / Purge / crypto erase): never claims more than it delivers.
@@ -49,7 +49,7 @@ rm -r $D
 
 ### Verification and the canary harness (Milestone 4)
 - **Full read-back:** `--verify` (on `wipe`), or later with `shunya verify`.
-- **Sampled:** `--sample N --seed HEX`. The output states the unwiped share it catches with 95 % probability; 3000 samples catch 0.1 %. The seed is labelled operator-chosen until Milestone 8 derives it from the transparency log.
+- **Sampled:** `--sample N` with `--log URL --log-key K` (seed from the transparency log, M8), or `--seed HEX` (labelled operator-chosen). The output states the unwiped share it catches with 95 % probability; 3000 samples catch 0.1 %.
 - **Results are journalled:** every verification is a signed `verified` record, and `journal show` lists them.
 - **Canary harness:** `make lab-test` runs it in the lab VM. The report goes to `lab/results/latest/canary-report.{json,txt}`.
 - **Broken-wipe check:** `make test-broken` shows the harness catching a wipe that skips the last 1 %.
@@ -102,6 +102,28 @@ shunya cert issue --journal OLD.journal --key K            # certificate for an 
 - **Dev keys:** journals from Milestones 3–6 (dev keys) can be certified. They are marked,
   and verifiers refuse them without `--allow-dev-key`.
 - **Design:** `design/CERTIFICATES.md`.
+
+### Transparency log and the public verifier (Milestone 8)
+```sh
+shunya-verify log-key --origin 127.0.0.1:8080/log --out $D/log         # log.key (secret), log.vkey
+shunya-verify serve --init --dir $D/log/tiles --log-key $D/log/log.key \
+    --root $R/root.pub --revocations $R/revocations.json   # second terminal; 127.0.0.1:8080, loopback only
+shunya wipe --execute --sample 3000 --log http://127.0.0.1:8080 --log-key $D/log/log.vkey \
+    --journal $D/w.journal --key $D/station.key --station-cert $D/station.cert.json --image $D/disk.img
+#   seed from the log after the wipe; certificate issued, logged, proof added; QR -> http://127.0.0.1:8080/c/ID
+shunya-verify --root $R/root.pub --revocations $R/revocations.json --log-key $D/log/log.vkey --require-log $D/w.journal.cert.json
+shunya-verify audit --log http://127.0.0.1:8080 --log-key $D/log/log.vkey --state $D/audit.state
+shunya cert submit --log http://127.0.0.1:8080 --log-key $D/log/log.vkey CERT.json   # if the log was down
+```
+- **Seed:** the station sends a signed request after the wipe; the log adds it plus random
+  bytes of its own and signs a checkpoint; the seed is a hash of that checkpoint. Anyone can
+  recompute it from the certificate. Asking twice is visible in the public log.
+- **Offline:** if the log is unreachable, the default is a full read-back instead;
+  `--offline-seed local` samples with a random seed the tool draws itself (labelled).
+- **Audit:** rebuilds the tree from every entry, checks every tile, and proves the log
+  consistent with the checkpoint saved last time. Deleting or editing an entry is caught,
+  even if the operator re-signs everything.
+- **Design:** `design/TRANSPARENCY_LOG.md`.
 
 ### Throughput
 `make bench`, Go 1.27.4, i7-12700H, WSL2 (ext4 temp dir; the page cache absorbs most writes):

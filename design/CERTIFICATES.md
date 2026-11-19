@@ -68,26 +68,29 @@ every byte (21 862 variants of a 2.4 KB certificate), and `FuzzVerify` searches 
 
 - **Certificate ID:** hex SHA-256 of BODY's canonical bytes. The QR code holds
   `verify_url + ID`.
-- **`log`:** will hold the transparency-log inclusion proof (Milestone 8). It sits outside
-  the signature because it is added after signing and proves itself. Until then it must be
-  `null`.
+- **`log`:** `null`, or, once logged, the transparency-log inclusion proof
+  `{"index":N,"checkpoint":"<signed checkpoint>","proof":["<base64>",…]}` (M8, see
+  `TRANSPARENCY_LOG.md`). It sits outside the station's signature because it is added after
+  signing; the log's signature on the checkpoint covers it. The logged entry is the file with
+  `"log": null`, so logging changes neither the ID nor the PDF. `shunya-verify --log-key K`
+  checks it; `--require-log` refuses certificates without one.
 
-BODY (schema version 1):
+BODY (schema version 2 since M8; version 1 still verifies):
 
 | Member | Content |
 |---|---|
-| `format`, `version` | `shunya-erasure-certificate`, 1 |
+| `format`, `version` | `shunya-erasure-certificate`, 2 (1 for certificates issued before M8) |
 | `wipe_id`, `issued` | the journal's wipe ID; issue time (RFC 3339 UTC, seconds) |
 | `result` | always `erased-and-verified`: Shunya issues no certificate for less |
 | `tool` | wiping and issuing tool versions, the SHA-256 of each executable (builds are reproducible, so anyone can rebuild and compare), build kind. `wipe_build_hash` is `""` for journals written before M7 |
 | `device` | path, model, serial, WWID, size, fingerprint (fp2), native fingerprint (HPA), media type, virtual |
 | `erasure` | method, NIST level, overwrite patterns (never their keys), bytes, sector size, start and finish, Security Erase and firmware steps (never the temporary password), the plan's caveats |
 | `hidden_areas` | checked or why not, HPA size, whether it was wiped, DCO state, policy, final state |
-| `verification` | every read-back: mode (full, sampled, markers), pattern, bytes, bad sectors, samples, seed and seed source, 95 % bound, scope |
+| `verification` | every read-back: mode (full, sampled, markers), pattern, bytes, bad sectors, samples, seed and seed source (`operator`, `tlog-checkpoint`, `local-random`), 95 % bound, scope. Version 2, seed source `tlog-checkpoint` only: `seed_request` (the station's signed request) and `seed_log` (the log's checkpoint and the request's inclusion proof), from which any verifier recomputes the seed |
 | `interruptions` | every stop and resume, with times |
 | `journal` | SHA-256 of the signed journal, record count, signing key |
 | `station` | key id, public key, name, and the root-signed station certificate (`null` for a dev key) |
-| `verify_url` | `https://…`, at most 100 characters; default `https://verify.shunya.invalid/c/` (`.invalid` is reserved: a placeholder until M8) |
+| `verify_url` | `https://…`, or `http://127.0.0.1…`/`http://localhost…` for a local verifier; at most 100 characters. Default: the log's page (`LOG/c/`) when `--log` is given, else `https://verify.shunya.invalid/c/` (`.invalid` is reserved: a placeholder) |
 
 The verifier also checks internal consistency:
 - an overwrite is never Purge;
@@ -95,7 +98,11 @@ The verifier also checks internal consistency:
 - every verification passed;
 - the journal key is the certificate key;
 - the method is a known one;
-- the station certificate's key and name match.
+- the station certificate's key and name match;
+- a log seed belongs to this wipe, device and station, was asked for no earlier than the
+  erase finished, and is the seed its checkpoint gives (with the log key: the checkpoint is
+  the log's and includes the request);
+- an operator-chosen or locally drawn seed is reported as such.
 
 ## Issuing
 
@@ -124,10 +131,12 @@ from M3–M6 can be certified, as agreed for M7.
 | `compromised` | refused | refused |
 
 A station asserts its own issue times. Someone holding a stolen key can therefore backdate a
-certificate to before any revocation. Until certificates are logged (M8), the only safe
-answer for a compromised key is to distrust everything it signed. M8 adds log inclusion
-proofs, which date a certificate independently. A compromised station's certificates logged
-before the revocation can then be accepted again.
+certificate to before any revocation, so the only safe answer for a compromised key is to
+distrust everything it signed. The M8 log orders certificates (an entry index can't be
+backdated), but its checkpoints carry no time, and revocation lists don't yet refer to log
+positions. So `compromised` still refuses every certificate of the key. Accepting those
+logged before the compromise was reported ("compromised as of log size N") is a possible
+later refinement.
 
 A retired key can later be marked compromised; nothing can be downgraded or repeated. Lists
 carry an increasing number. A verifier working offline cannot know whether a newer list

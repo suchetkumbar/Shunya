@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"shunya/internal/backend"
 	"shunya/internal/buildinfo"
@@ -23,10 +25,12 @@ const certUsage = `usage: shunya cert <command>
 
   issue --journal J --key K [--station-cert S] [--verify-url URL] [--out F.json] [--pdf F.pdf]
                           certificate for a finished, verified wipe (default: J.cert.json, J.cert.pdf)
+  submit --log URL --log-key KEY CERT.json   log the certificate; adds the verified inclusion proof
   show  [verify flags] CERT.json         verify and summarise (as shunya-verify)
   pdf   [verify flags] --out F.pdf CERT.json   verify, then render the printable PDF again
 
-verify flags: --root ROOT.pub --revocations FILE | --no-revocation-check, --allow-dev-key, --pdf FILE
+verify flags: --root ROOT.pub --revocations FILE | --no-revocation-check, --allow-dev-key, --pdf FILE,
+              --log-key LOG.vkey, --require-log
 `
 
 func cmdCert(args []string, stdout, stderr io.Writer) int {
@@ -37,6 +41,8 @@ func cmdCert(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "issue":
 		return certIssue(args[1:], stdout, stderr)
+	case "submit":
+		return certSubmit(args[1:], stdout, stderr)
 	case "show":
 		return certShow(args[1:], "", stdout, stderr)
 	case "pdf":
@@ -52,6 +58,7 @@ func cmdCert(args []string, stdout, stderr io.Writer) int {
 // issueRequest is one certificate to issue from a journal.
 type issueRequest struct {
 	journal, key, stationCert, verifyURL, outJSON, outPDF string
+	log                                                   wipeFlags // logURL, logKey: submit after issuing
 }
 
 // issueCertificate builds, signs and writes the certificate and its PDF.
@@ -106,6 +113,22 @@ func issueCertificate(r issueRequest, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if r.verifyURL == "" && r.log.logURL != "" && body.VerifyURL == cert.DefaultVerifyURL {
+		// The log's own recycler page is the QR target.
+		body.VerifyURL = strings.TrimRight(r.log.logURL, "/") + "/c/"
+		if !cert.ValidVerifyURL(body.VerifyURL) {
+			return fmt.Errorf("the log URL %q makes an unusable verify URL; give --verify-url", r.log.logURL)
+		}
+		if signed, err = cert.Sign(body, priv); err != nil {
+			return err
+		}
+		if id, err = cert.BodyID(body); err != nil {
+			return err
+		}
+		if pdfBytes, err = certpdf.Render(body, id); err != nil {
+			return err
+		}
+	}
 	if r.outJSON == "" {
 		r.outJSON = r.journal + ".cert.json"
 	}
@@ -119,6 +142,11 @@ func issueCertificate(r issueRequest, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "CERTIFICATE %s\n  %s\n  %s\n  QR: %s%s\n", id, r.outJSON, r.outPDF, body.VerifyURL, id)
+	if r.log.logURL != "" {
+		if err := submit(context.Background(), r.log, r.outJSON, stdout); err != nil {
+			return fmt.Errorf("log submission: %w", err)
+		}
+	}
 	if sc == nil {
 		fmt.Fprintln(stdout, "  signed with an uncertified station key: verifiers refuse it unless --allow-dev-key (certify the key with shunya keys issue-station)")
 	}
@@ -135,10 +163,12 @@ func certIssue(args []string, stdout, stderr io.Writer) int {
 	fl.StringVar(&r.verifyURL, "verify-url", "", "verification URL prefix for the QR code (default "+cert.DefaultVerifyURL+")")
 	fl.StringVar(&r.outJSON, "out", "", "certificate file (default JOURNAL.cert.json)")
 	fl.StringVar(&r.outPDF, "pdf", "", "PDF file (default JOURNAL.cert.pdf)")
+	fl.StringVar(&r.log.logURL, "log", "", "submit the certificate to this transparency log")
+	fl.StringVar(&r.log.logKey, "log-key", "", "the log's verifier key (file or key)")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
-	if r.journal == "" || r.key == "" || fl.NArg() != 0 {
+	if r.journal == "" || r.key == "" || fl.NArg() != 0 || (r.log.logURL == "") != (r.log.logKey == "") {
 		fmt.Fprint(stderr, "usage: shunya cert issue --journal J --key K [--station-cert S] [--verify-url URL] [--out F] [--pdf F]\n")
 		return 2
 	}
@@ -159,6 +189,8 @@ func verifyFlags(fl *flag.FlagSet, o *certcheck.Options) {
 	fl.BoolVar(&o.SkipRevocation, "no-revocation-check", false, "verify without a revocation list (reported)")
 	fl.BoolVar(&o.AllowDevKey, "allow-dev-key", false, "accept certificates signed by uncertified dev keys (reported)")
 	fl.StringVar(&o.PDF, "pdf", "", "also check that this PDF is exactly the certificate's rendering")
+	fl.StringVar(&o.LogKey, "log-key", "", "the transparency log's verifier key: check log proofs and log seeds")
+	fl.BoolVar(&o.RequireLog, "require-log", false, "refuse certificates without a verified log inclusion proof")
 }
 
 func certShow(args []string, mode string, stdout, stderr io.Writer) int {

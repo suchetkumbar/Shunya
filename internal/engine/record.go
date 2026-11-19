@@ -10,6 +10,7 @@ import (
 
 	"shunya/internal/ata"
 	"shunya/internal/journal"
+	"shunya/internal/logentry"
 	"shunya/internal/sanitize"
 )
 
@@ -157,6 +158,10 @@ type VerifiedData struct {
 	// Scope is empty when the whole planned range was covered; otherwise it says what
 	// was left out (e.g. the hidden range after the HPA was restored).
 	Scope string `json:"scope,omitempty"`
+	// SeedRequest and SeedLog: for seed source tlog-checkpoint, the station's signed
+	// request and the log's checkpoint with the request's inclusion proof (Milestone 8).
+	SeedRequest *logentry.SeedRequest `json:"seed_request,omitempty"`
+	SeedLog     *logentry.Inclusion   `json:"seed_log,omitempty"`
 }
 
 // ExpectedPattern is the pattern a read-back checks: VerifyPattern, or the last pass

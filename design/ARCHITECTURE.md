@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: Milestone 7 — certificates and the key hierarchy implemented. Updated at every milestone.
+> Status: Milestone 8 — transparency log, unpredictable sampling and the public verifier implemented. Updated at every milestone.
 
 Shunya is a verifiable secure data-wiping tool (SIH25070). It picks the strongest
 NIST SP 800-88 method each medium supports, wipes it (including hidden areas), verifies
@@ -11,8 +11,8 @@ recorded in a public append-only transparency log.
 
 ```
 cmd/shunya           CLI + TUI: list (M1), guard (M2), wipe, journal show (M3), verify (M4), plan (M6),
-                     keys, cert (M7)
-cmd/shunya-verify    offline certificate verifier (M7); `serve` (HTTP API, transparency log, web page) in M8
+                     keys, cert (M7), cert submit and log-seeded --sample (M8)
+cmd/shunya-verify    offline certificate verifier (M7); log-key, serve, audit (M8)
 
 internal/sysfs       sysfs/procfs readers over fs.FS (fakeable in tests)
 internal/device      enumeration model, fingerprint, media classification (+ confidence)
@@ -31,7 +31,14 @@ internal/pdf         minimal deterministic PDF 1.7 writer
 internal/qr          QR Code encoder (byte mode, level M, versions 1–10)
 internal/buildinfo   SHA-256 of the running executable
 internal/keys        root → station key hierarchy, revocation
-internal/tlog        RFC 6962 Merkle tree, C2SP checkpoints, proofs
+internal/tlog        RFC 6962 Merkle tree, inclusion and consistency proofs (RFC 9162 verification)
+internal/note        C2SP signed notes (Ed25519)
+internal/checkpoint  C2SP tlog-checkpoint
+internal/tilestore   C2SP tlog-tiles log storage (crash-safe, self-checking)
+internal/logentry    log entry types, seed requests, inclusion proofs, the sampling seed
+internal/logserver   HTTP API, rate limit, recycler page
+internal/logclient   station/auditor side; verifies every answer
+internal/audit       full-log audit: content, consistency with the saved checkpoint, grinding
 internal/canary      HMAC sector canaries, Aho-Corasick residue scanner, planted files,
                      carve inspection, harness report (lab/test tooling; the engine never imports it)
 lab/                 QEMU lab scripts, capability probe, lab/check (result assertions),
@@ -458,3 +465,22 @@ Full design: `CERTIFICATES.md`. In short:
 
 Exit codes added: `cert issue` returns 4 when the journal is not certifiable;
 `shunya-verify` returns 0 valid, 1 invalid, 2 usage.
+
+## Transparency log and the public verifier (Milestone 8)
+
+Full design: `TRANSPARENCY_LOG.md`. In short:
+
+- `internal/tlog` keeps every complete subtree hash in memory and builds RFC 6962 inclusion
+  and consistency proofs; verification follows RFC 9162. A consistency proof from the empty
+  tree is refused (it proves nothing), as in transparency-dev/merkle.
+- `internal/note` and `internal/checkpoint` are the C2SP formats; `internal/tilestore`
+  writes C2SP tiles and entry bundles, the checkpoint last, and checks everything on load.
+- `internal/logentry`: certificates, signed seed requests and random beacons. The seed is
+  SHA-256 over a checkpoint that covers the request and a beacon.
+- The station (`cmd/shunya/logseed.go`) asks for the seed after `done`. It falls back to a
+  full read-back (or, if chosen, a local random seed) only when the log is unreachable, and
+  submits the certificate after issuing it. The proof goes in the envelope's `log` member.
+- `cert.Verify` checks log proofs and log seeds with `Policy.LogKey`; certificate version 2
+  adds `seed_request`/`seed_log` to sampled verifications.
+- `internal/logserver` is `shunya-verify serve`; `internal/audit` is `shunya-verify audit`,
+  over HTTP (`logclient.FS`) or a directory.
